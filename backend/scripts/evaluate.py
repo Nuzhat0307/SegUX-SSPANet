@@ -748,10 +748,19 @@ def evaluate_mc_dropout(
     mc_samples=30,
 ):
     """
-    Estimate predictive uncertainty using MC Dropout.
+    Evaluate Monte Carlo Dropout uncertainty.
 
-    To keep CPU evaluation reasonable, only the first
-    10 batches of the selected evaluation subset are used.
+    IMPORTANT:
+
+    MC confidence is the actual probability of the
+    predicted class:
+
+        max(mean Monte Carlo probabilities)
+
+    It is NOT entropy-derived certainty.
+
+    Predictive entropy and mutual information are
+    reported separately.
     """
 
     logger.info(
@@ -761,6 +770,8 @@ def evaluate_mc_dropout(
 
     mc_confidences = []
     mc_entropies = []
+    mc_mutual_infos = []
+    mc_uncertain_flags = []
 
     # --------------------------------------------------------
     # Enable dropout
@@ -784,7 +795,9 @@ def evaluate_mc_dropout(
                 if batch_idx >= 10:
                     break
 
-                images = images.to(device)
+                images = images.to(
+                    device
+                )
 
                 # ------------------------------------------------
                 # Generate segmentation guidance once
@@ -798,11 +811,11 @@ def evaluate_mc_dropout(
                     )
                 )
 
-                all_probs_mc = []
+                # ------------------------------------------------
+                # Monte Carlo forward passes
+                # ------------------------------------------------
 
-                # ------------------------------------------------
-                # Multiple stochastic predictions
-                # ------------------------------------------------
+                all_probs_mc = []
 
                 for _ in range(
                     mc_samples
@@ -822,13 +835,15 @@ def evaluate_mc_dropout(
                         probs.cpu().numpy()
                     )
 
-                # ------------------------------------------------
-                # Mean probability
-                # ------------------------------------------------
-
-                all_probs_mc = np.array(
-                    all_probs_mc
+                all_probs_mc = np.asarray(
+                    all_probs_mc,
+                    dtype=np.float64,
                 )
+
+                # Shape:
+                #
+                # [MC samples, batch, classes]
+                #
 
                 mean_probs = (
                     all_probs_mc.mean(
@@ -836,37 +851,149 @@ def evaluate_mc_dropout(
                     )
                 )
 
+                # Numerical safety
+                mean_probs = np.clip(
+                    mean_probs,
+                    1e-10,
+                    1.0,
+                )
+
+                mean_probs = (
+                    mean_probs
+                    /
+                    mean_probs.sum(
+                        axis=1,
+                        keepdims=True,
+                    )
+                )
+
+                # ------------------------------------------------
+                # Predicted-class probability
+                # ------------------------------------------------
+
+                predicted_indices = (
+                    np.argmax(
+                        mean_probs,
+                        axis=1,
+                    )
+                )
+
+                top_probabilities = (
+                    np.max(
+                        mean_probs,
+                        axis=1,
+                    )
+                )
+
                 # ------------------------------------------------
                 # Predictive entropy
                 # ------------------------------------------------
 
-                entropy = -np.sum(
-                    mean_probs
-                    * np.log2(
-                        mean_probs + 1e-10
-                    ),
-                    axis=1,
-                )
-
-                # ------------------------------------------------
-                # Normalize entropy
-                # ------------------------------------------------
-
-                confidence = (
-                    1.0
-                    - entropy
-                    / np.log2(
-                        settings.NUM_CLASSES
+                predictive_entropy = (
+                    -np.sum(
+                        mean_probs
+                        * np.log2(
+                            mean_probs
+                        ),
+                        axis=1,
                     )
                 )
 
+                # ------------------------------------------------
+                # Expected entropy
+                #
+                # E[predictive entropy]
+                # ------------------------------------------------
+
+                sample_entropies = (
+                    -np.sum(
+                        all_probs_mc
+                        * np.log2(
+                            np.clip(
+                                all_probs_mc,
+                                1e-10,
+                                1.0,
+                            )
+                        ),
+                        axis=2,
+                    )
+                )
+
+                expected_entropy = (
+                    sample_entropies.mean(
+                        axis=0
+                    )
+                )
+
+                # ------------------------------------------------
+                # Mutual information
+                #
+                # MI = predictive entropy
+                #      - expected entropy
+                # ------------------------------------------------
+
+                mutual_information = np.maximum(
+                    predictive_entropy
+                    - expected_entropy,
+                    0.0,
+                )
+
+                # ------------------------------------------------
+                # Uncertainty decision
+                #
+                # Keep this consistent with the production
+                # inference implementation.
+                # ------------------------------------------------
+
+                confidence_threshold = float(
+                    getattr(
+                        settings,
+                        "UNCERTAINTY_THRESHOLD",
+                        0.75,
+                    )
+                )
+
+                mutual_information_threshold = 0.30
+
+                low_class_confidence = (
+                    top_probabilities
+                    < confidence_threshold
+                )
+
+                high_epistemic_uncertainty = (
+                    mutual_information
+                    > mutual_information_threshold
+                )
+
+                is_uncertain = (
+                    low_class_confidence
+                    |
+                    high_epistemic_uncertainty
+                )
+
+                # ------------------------------------------------
+                # Store
+                # ------------------------------------------------
+
                 mc_confidences.extend(
-                    confidence.tolist()
+                    top_probabilities.tolist()
                 )
 
                 mc_entropies.extend(
-                    entropy.tolist()
+                    predictive_entropy.tolist()
                 )
+
+                mc_mutual_infos.extend(
+                    mutual_information.tolist()
+                )
+
+                mc_uncertain_flags.extend(
+                    is_uncertain.tolist()
+                )
+
+                # ------------------------------------------------
+                # Progress
+                # ------------------------------------------------
 
                 if (
                     batch_idx % 2 == 0
@@ -881,19 +1008,20 @@ def evaluate_mc_dropout(
     finally:
 
         # --------------------------------------------------------
-        # Always disable MC dropout afterwards
+        # Always restore normal inference mode
         # --------------------------------------------------------
 
         classifier.disable_mc_dropout()
 
-    # --------------------------------------------------------
-    # Metrics
-    # --------------------------------------------------------
+    # ============================================================
+    # FINAL METRICS
+    # ============================================================
 
     if mc_confidences:
 
         mc_metrics = {
 
+            # Actual predicted-class probability
             "avg_mc_confidence":
                 float(
                     np.mean(
@@ -908,16 +1036,31 @@ def evaluate_mc_dropout(
                     )
                 ),
 
+            "avg_mutual_information":
+                float(
+                    np.mean(
+                        mc_mutual_infos
+                    )
+                ),
+
             "uncertain_cases_ratio":
                 float(
                     np.mean(
-                        [
-                            c < 0.75
-                            for c
-                            in mc_confidences
-                        ]
+                        mc_uncertain_flags
                     )
                 ),
+
+            "confidence_threshold":
+                float(
+                    getattr(
+                        settings,
+                        "UNCERTAINTY_THRESHOLD",
+                        0.75,
+                    )
+                ),
+
+            "mutual_information_threshold":
+                0.30,
         }
 
     else:
@@ -928,7 +1071,21 @@ def evaluate_mc_dropout(
 
             "avg_predictive_entropy": 0.0,
 
+            "avg_mutual_information": 0.0,
+
             "uncertain_cases_ratio": 0.0,
+
+            "confidence_threshold":
+                float(
+                    getattr(
+                        settings,
+                        "UNCERTAINTY_THRESHOLD",
+                        0.75,
+                    )
+                ),
+
+            "mutual_information_threshold":
+                0.30,
         }
 
     logger.info(
@@ -939,6 +1096,11 @@ def evaluate_mc_dropout(
     logger.info(
         f"MC Predictive Entropy: "
         f"{mc_metrics['avg_predictive_entropy']:.4f}"
+    )
+
+    logger.info(
+        f"MC Mutual Information: "
+        f"{mc_metrics['avg_mutual_information']:.4f}"
     )
 
     logger.info(

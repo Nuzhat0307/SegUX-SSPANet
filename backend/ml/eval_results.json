@@ -22,34 +22,57 @@
     "brats": 300
   },
   "classification": {
+    "num_samples": 300,
+    "num_classes": 4,
+    "classes_present": [
+      0,
+      1,
+      2
+    ],
     "accuracy": 0.9266666666666666,
-    "precision_macro": 0.906186822555109,
-    "recall_macro": 0.9333333333333332,
-    "f1_macro": 0.9174942571552741,
-    "auc_roc": null,
+    "precision_macro": 0.6796401169163317,
+    "recall_macro": 0.7,
+    "f1_macro": 0.6881206928664556,
+    "precision_class_0": 0.9928571428571429,
+    "recall_class_0": 0.896774193548387,
+    "f1_class_0": 0.9423728813559322,
+    "precision_class_1": 0.8235294117647058,
+    "recall_class_1": 0.9032258064516129,
+    "f1_class_1": 0.8615384615384616,
+    "precision_class_2": 0.9021739130434783,
+    "recall_class_2": 1.0,
+    "f1_class_2": 0.9485714285714286,
+    "precision_class_3": 0.0,
+    "recall_class_3": 0.0,
+    "f1_class_3": 0.0,
     "confusion_matrix": [
       [
         139,
         12,
-        4
+        4,
+        0
       ],
       [
         1,
         56,
-        5
+        5,
+        0
       ],
       [
         0,
         0,
-        83
+        83,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
       ]
     ],
-    "precision_class_0": 0.9928571428571429,
-    "recall_class_0": 0.896774193548387,
-    "precision_class_1": 0.8235294117647058,
-    "recall_class_1": 0.9032258064516129,
-    "precision_class_2": 0.9021739130434783,
-    "recall_class_2": 1.0
+    "auc_roc": 0.9930235996190294,
+    "auc_roc_note": "Macro one-vs-rest ROC-AUC calculated only for classes present in the evaluation set."
   },
   "segmentation": {
     "avg_dice": 0.40225617135977104,
@@ -59,12 +82,15 @@
   },
   "uncertainty": {
     "brier_score": 0.05525617966898782,
-    "expected_calibration_error": 0.06729054729143778
+    "expected_calibration_error": 0.06729052623113
   },
   "mc_dropout": {
-    "avg_mc_confidence": 0.7844655513763428,
-    "avg_predictive_entropy": 0.4310689032077789,
-    "uncertain_cases_ratio": 0.3
+    "avg_mc_confidence": 0.8997357405462157,
+    "avg_predictive_entropy": 0.42763274313908434,
+    "avg_mutual_information": 0.017284981445847218,
+    "uncertain_cases_ratio": 0.15,
+    "confidence_threshold": 0.75,
+    "mutual_information_threshold": 0.3
   },
   "num_test_samples": 300
 }
