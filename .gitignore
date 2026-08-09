@@ -1,0 +1,46 @@
+# Environment files
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.example
+
+# Node
+node_modules/
+
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build/output
+dist/
+build/
+
+# ML checkpoints
+backend/ml/checkpoints/
+
+# ML datasets - ignore all folders inside data
+backend/ml/data/*/
+
+# But keep Python files directly inside data
+!backend/ml/data/*.py
+
+# Ignore the ML scripts folder
+backend/scripts/ml/
+
+# Model output/weights
+*.pt
+*.pth
+*.onnx
+*.h5
+*.keras
+*.pkl
+*.joblib
+
+# Logs
+*.log

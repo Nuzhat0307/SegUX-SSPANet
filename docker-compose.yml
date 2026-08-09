@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  # --- Backend API ---
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/segux_sspanet}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SECRET_KEY=${SECRET_KEY:-segux-sspanet-secret-key-change-in-production}
+      - DEBUG=false
+    volumes:
+      - backend-models:/app/ml/checkpoints
+      - backend-data:/app/ml/data
+      - backend-uploads:/app/uploads
+      - backend-reports:/app/reports
+    restart: unless-stopped
+
+  # --- Frontend ---
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # --- Local PostgreSQL (optional, for local dev without Supabase) ---
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: segux_sspanet
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    profiles: ["local-db"]
+
+volumes:
+  backend-models:
+  backend-data:
+  backend-uploads:
+  backend-reports:
+  postgres-data:

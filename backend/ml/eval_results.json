@@ -1,0 +1,70 @@
+{
+  "model_version": "SegUX-SSPANet-v1.0.0",
+  "checkpoint": "ml/checkpoints/segux_sspanet_best.pth",
+  "device": "cpu",
+  "evaluation_configuration": {
+    "eval_samples_per_dataset": 300,
+    "batch_size": 2,
+    "mc_samples": 30
+  },
+  "training_configuration": {
+    "figshare_train": 1000,
+    "figshare_validation": 200,
+    "brats_train": 500,
+    "brats_validation": 200
+  },
+  "test_pool": {
+    "figshare": 1864,
+    "brats": 4098
+  },
+  "evaluated_samples": {
+    "figshare": 300,
+    "brats": 300
+  },
+  "classification": {
+    "accuracy": 0.9266666666666666,
+    "precision_macro": 0.906186822555109,
+    "recall_macro": 0.9333333333333332,
+    "f1_macro": 0.9174942571552741,
+    "auc_roc": null,
+    "confusion_matrix": [
+      [
+        139,
+        12,
+        4
+      ],
+      [
+        1,
+        56,
+        5
+      ],
+      [
+        0,
+        0,
+        83
+      ]
+    ],
+    "precision_class_0": 0.9928571428571429,
+    "recall_class_0": 0.896774193548387,
+    "precision_class_1": 0.8235294117647058,
+    "recall_class_1": 0.9032258064516129,
+    "precision_class_2": 0.9021739130434783,
+    "recall_class_2": 1.0
+  },
+  "segmentation": {
+    "avg_dice": 0.40225617135977104,
+    "avg_iou": 0.3209796117882756,
+    "avg_sensitivity": 0.48118651147401126,
+    "avg_specificity": 0.9870810277979751
+  },
+  "uncertainty": {
+    "brier_score": 0.05525617966898782,
+    "expected_calibration_error": 0.06729054729143778
+  },
+  "mc_dropout": {
+    "avg_mc_confidence": 0.790021488070488,
+    "avg_predictive_entropy": 0.41995702814310787,
+    "uncertain_cases_ratio": 0.3
+  },
+  "num_test_samples": 300
+}
