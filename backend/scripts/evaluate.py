@@ -548,9 +548,9 @@ def evaluate_classification(
     # Uncertainty metrics
     # --------------------------------------------------------
 
-    uncertainty_metrics(
-        y_true,
-        y_probs,
+    unc_metrics = uncertainty_metrics(
+        all_labels,
+        all_probs,
     )
 
     logger.info(

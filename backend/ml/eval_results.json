@@ -79,20 +79,20 @@
     "auc_roc_note": "Macro one-vs-rest ROC-AUC calculated only for classes present in the evaluation set."
   },
   "segmentation": {
-    "avg_dice": 0.40225617135977104,
-    "avg_iou": 0.3209796117882756,
+    "avg_dice": 0.3817249972576802,
+    "avg_iou": 0.30039088006744086,
     "avg_sensitivity": 0.48118651147401126,
     "avg_specificity": 0.9870810277979751
   },
   "uncertainty": {
-    "brier_score": 0.059011097021704886,
-    "expected_calibration_error": 0.09266397515932716
+    "brier_score": 0.11674521926873754,
+    "expected_calibration_error": 0.09266397175056089
   },
   "mc_dropout": {
-    "avg_mc_confidence": 0.849870763039051,
-    "avg_predictive_entropy": 0.5614455140237783,
-    "avg_mutual_information": 0.021008673564678528,
-    "uncertain_cases_ratio": 0.2577777777777778,
+    "avg_mc_confidence": 0.7945507983122099,
+    "avg_predictive_entropy": 0.6681828309117024,
+    "avg_mutual_information": 0.022712619653237183,
+    "uncertain_cases_ratio": 0.45,
     "confidence_threshold": 0.75,
     "mutual_information_threshold": 0.3
   },
