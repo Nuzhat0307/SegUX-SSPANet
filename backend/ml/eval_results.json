@@ -18,50 +18,54 @@
     "brats": 4098
   },
   "evaluated_samples": {
-    "figshare": 300,
+    "figshare": 225,
     "brats": 300
   },
   "classification": {
-    "num_samples": 300,
+    "num_samples": 225,
     "num_classes": 4,
     "classes_present": [
       0,
       1,
       2
     ],
-    "accuracy": 0.9266666666666666,
-    "precision_macro": 0.6796401169163317,
-    "recall_macro": 0.7,
-    "f1_macro": 0.6881206928664556,
-    "precision_class_0": 0.9928571428571429,
-    "recall_class_0": 0.896774193548387,
-    "f1_class_0": 0.9423728813559322,
-    "precision_class_1": 0.8235294117647058,
-    "recall_class_1": 0.9032258064516129,
-    "f1_class_1": 0.8615384615384616,
-    "precision_class_2": 0.9021739130434783,
-    "recall_class_2": 1.0,
-    "f1_class_2": 0.9485714285714286,
+    "accuracy": 0.9377777777777778,
+    "precision_macro": 0.9395529964150883,
+    "recall_macro": 0.9377777777777778,
+    "f1_macro": 0.9380664703341113,
+    "precision_class_0": 0.9857142857142858,
+    "recall_class_0": 0.92,
+    "f1_class_0": 0.9517241379310345,
+    "precision_class_1": 0.8987341772151899,
+    "recall_class_1": 0.9466666666666667,
+    "f1_class_1": 0.922077922077922,
+    "precision_class_2": 0.9342105263157895,
+    "recall_class_2": 0.9466666666666667,
+    "f1_class_2": 0.9403973509933775,
     "precision_class_3": 0.0,
     "recall_class_3": 0.0,
     "f1_class_3": 0.0,
+    "support_class_0": 75,
+    "support_class_1": 75,
+    "support_class_2": 75,
+    "support_class_3": 0,
     "confusion_matrix": [
       [
-        139,
-        12,
+        69,
         4,
+        2,
         0
       ],
       [
         1,
-        56,
-        5,
+        71,
+        3,
         0
       ],
       [
         0,
-        0,
-        83,
+        4,
+        71,
         0
       ],
       [
@@ -71,7 +75,7 @@
         0
       ]
     ],
-    "auc_roc": 0.9930235996190294,
+    "auc_roc": 0.9922666666666666,
     "auc_roc_note": "Macro one-vs-rest ROC-AUC calculated only for classes present in the evaluation set."
   },
   "segmentation": {
@@ -81,16 +85,16 @@
     "avg_specificity": 0.9870810277979751
   },
   "uncertainty": {
-    "brier_score": 0.05525617966898782,
-    "expected_calibration_error": 0.06729052623113
+    "brier_score": 0.059011097021704886,
+    "expected_calibration_error": 0.09266397515932716
   },
   "mc_dropout": {
-    "avg_mc_confidence": 0.8997357405462157,
-    "avg_predictive_entropy": 0.42763274313908434,
-    "avg_mutual_information": 0.017284981445847218,
-    "uncertain_cases_ratio": 0.15,
+    "avg_mc_confidence": 0.849870763039051,
+    "avg_predictive_entropy": 0.5614455140237783,
+    "avg_mutual_information": 0.021008673564678528,
+    "uncertain_cases_ratio": 0.2577777777777778,
     "confidence_threshold": 0.75,
     "mutual_information_threshold": 0.3
   },
-  "num_test_samples": 300
+  "num_test_samples": 225
 }

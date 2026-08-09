@@ -94,8 +94,14 @@ def classification_metrics(
     # --------------------------------------------------------
     # All classes represented by the model
     # --------------------------------------------------------
+    all_labels = np.arange(num_classes)
 
-    labels = np.arange(num_classes)
+    # Only classes that actually occur in the evaluation dataset.
+    # IMPORTANT: no_tumor currently has 0 images, so it must not
+    # artificially reduce macro precision/recall/F1.
+    present_labels = np.unique(y_true).astype(np.int64)
+
+    labels = all_labels
 
     # --------------------------------------------------------
     # Core metrics
@@ -118,20 +124,20 @@ def classification_metrics(
         ),
 
         "precision_macro": float(
-            precision_score(
-                y_true,
-                y_pred,
-                labels=labels,
-                average="macro",
-                zero_division=0,
-            )
-        ),
+    precision_score(
+        y_true,
+        y_pred,
+        labels=present_labels,
+        average="macro",
+        zero_division=0,
+    )
+),
 
         "recall_macro": float(
             recall_score(
                 y_true,
                 y_pred,
-                labels=labels,
+                labels=present_labels,
                 average="macro",
                 zero_division=0,
             )
@@ -141,7 +147,7 @@ def classification_metrics(
             f1_score(
                 y_true,
                 y_pred,
-                labels=labels,
+                labels=present_labels,
                 average="macro",
                 zero_division=0,
             )
@@ -195,6 +201,16 @@ def classification_metrics(
         ] = float(
             f1_per_class[class_idx]
         )
+
+    class_support = np.bincount(
+        y_true,
+        minlength=num_classes,
+    )
+
+    for class_idx in labels:
+        metrics[
+            f"support_class_{int(class_idx)}"
+        ] = int(class_support[class_idx])
 
     # --------------------------------------------------------
     # Confusion matrix
@@ -351,23 +367,26 @@ def classification_metrics(
 def dice_score(
     pred: np.ndarray,
     target: np.ndarray,
-    smooth: float = 1.0,
+    smooth: float = 1e-6,
 ) -> float:
     """
     Compute Dice Similarity Coefficient.
     """
 
-    pred_flat = np.asarray(
-        pred
-    ).flatten()
-
-    target_flat = np.asarray(
-        target
-    ).flatten()
+    pred_flat = np.asarray(pred).flatten()
+    target_flat = np.asarray(target).flatten()
 
     intersection = (
         pred_flat * target_flat
     ).sum()
+
+    denominator = (
+        pred_flat.sum()
+        + target_flat.sum()
+    )
+
+    if denominator == 0:
+        return 1.0
 
     return float(
         (
@@ -376,8 +395,7 @@ def dice_score(
         )
         /
         (
-            pred_flat.sum()
-            + target_flat.sum()
+            denominator
             + smooth
         )
     )
@@ -386,19 +404,14 @@ def dice_score(
 def iou_score(
     pred: np.ndarray,
     target: np.ndarray,
-    smooth: float = 1.0,
+    smooth: float = 1e-6,
 ) -> float:
     """
     Compute Intersection over Union.
     """
 
-    pred_flat = np.asarray(
-        pred
-    ).flatten()
-
-    target_flat = np.asarray(
-        target
-    ).flatten()
+    pred_flat = np.asarray(pred).flatten()
+    target_flat = np.asarray(target).flatten()
 
     intersection = (
         pred_flat * target_flat
@@ -409,6 +422,9 @@ def iou_score(
         + target_flat.sum()
         - intersection
     )
+
+    if union == 0:
+        return 1.0
 
     return float(
         (
@@ -467,25 +483,39 @@ def segmentation_metrics(
         ).sum()
     )
 
-    sensitivity = (
-        true_positive
-        /
-        max(
+    if (
             true_positive
-            + false_negative,
-            1.0,
-        )
-    )
+            + false_negative
+    ) > 0:
 
-    specificity = (
-        true_negative
-        /
-        max(
-            true_negative
-            + false_positive,
-            1.0,
+        sensitivity = (
+                true_positive
+                /
+                (
+                        true_positive
+                        + false_negative
+                )
         )
-    )
+
+    else:
+        sensitivity = 1.0
+
+    if (
+            true_negative
+            + false_positive
+    ) > 0:
+
+        specificity = (
+                true_negative
+                /
+                (
+                        true_negative
+                        + false_positive
+                )
+        )
+
+    else:
+        specificity = 1.0
 
     return {
         "dice": dice_score(
@@ -513,61 +543,107 @@ def segmentation_metrics(
 # ============================================================
 
 def uncertainty_metrics(
-    confidences: List[float],
-    correct: List[bool],
+    y_true: np.ndarray,
+    y_probs: np.ndarray,
 ) -> Dict:
     """
-    Compute confidence calibration metrics.
+    Compute multiclass calibration metrics.
 
-    `confidence` must be the actual probability assigned
-    to the predicted class.
+    y_true:
+        Ground-truth integer class labels, shape [N].
 
-    `correct` indicates whether the prediction was correct.
+    y_probs:
+        Predicted probability matrix, shape [N, NUM_CLASSES].
+
+    Returns:
+        Multiclass Brier score and Expected Calibration Error (ECE).
     """
 
-    confidences = np.asarray(
-        confidences,
-        dtype=np.float64,
-    )
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_probs = np.asarray(y_probs, dtype=np.float64)
 
-    correct = np.asarray(
-        correct,
-        dtype=np.float64,
-    )
-
-    if len(confidences) == 0:
+    if len(y_true) == 0:
         return {
             "brier_score": 0.0,
             "expected_calibration_error": 0.0,
         }
 
-    if len(confidences) != len(correct):
+    if y_probs.ndim != 2:
         raise ValueError(
-            "confidences and correct must "
-            "have the same length."
+            f"y_probs must be 2-dimensional. "
+            f"Received shape: {y_probs.shape}"
         )
 
-    confidences = np.clip(
-        confidences,
-        0.0,
+    if len(y_true) != len(y_probs):
+        raise ValueError(
+            "y_true and y_probs must have the same length."
+        )
+
+    num_classes = y_probs.shape[1]
+
+    # --------------------------------------------------------
+    # Normalize probabilities defensively
+    # --------------------------------------------------------
+
+    y_probs = np.clip(
+        y_probs,
+        1e-12,
         1.0,
     )
 
-    # --------------------------------------------------------
-    # Brier score for confidence of predicted class
-    # --------------------------------------------------------
-
-    brier = float(
-        np.mean(
-            (
-                confidences
-                - correct
-            ) ** 2
+    y_probs = (
+        y_probs
+        / np.maximum(
+            y_probs.sum(axis=1, keepdims=True),
+            1e-12,
         )
     )
 
     # --------------------------------------------------------
-    # Expected Calibration Error
+    # MULTICLASS BRIER SCORE
+    # --------------------------------------------------------
+
+    one_hot = np.zeros_like(y_probs)
+
+    valid = (
+        (y_true >= 0)
+        & (y_true < num_classes)
+    )
+
+    one_hot[
+        np.arange(len(y_true))[valid],
+        y_true[valid],
+    ] = 1.0
+
+    brier = float(
+        np.mean(
+            np.sum(
+                (y_probs - one_hot) ** 2,
+                axis=1,
+            )
+        )
+    )
+
+    # --------------------------------------------------------
+    # CONFIDENCE OF PREDICTED CLASS
+    # --------------------------------------------------------
+
+    predicted_class = np.argmax(
+        y_probs,
+        axis=1,
+    )
+
+    confidences = np.max(
+        y_probs,
+        axis=1,
+    )
+
+    correct = (
+        predicted_class == y_true
+    ).astype(np.float64)
+
+    # --------------------------------------------------------
+    # EXPECTED CALIBRATION ERROR
     # --------------------------------------------------------
 
     n_bins = 10
@@ -580,9 +656,7 @@ def uncertainty_metrics(
 
     ece = 0.0
 
-    for i in range(
-        n_bins
-    ):
+    for i in range(n_bins):
 
         lower = bin_boundaries[i]
         upper = bin_boundaries[i + 1]
@@ -590,17 +664,15 @@ def uncertainty_metrics(
         if i == 0:
 
             mask = (
-                confidences >= lower
-            ) & (
-                confidences <= upper
+                (confidences >= lower)
+                & (confidences <= upper)
             )
 
         else:
 
             mask = (
-                confidences > lower
-            ) & (
-                confidences <= upper
+                (confidences > lower)
+                & (confidences <= upper)
             )
 
         if not np.any(mask):
@@ -625,7 +697,5 @@ def uncertainty_metrics(
 
     return {
         "brier_score": brier,
-
-        "expected_calibration_error":
-            float(ece),
+        "expected_calibration_error": float(ece),
     }

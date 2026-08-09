@@ -548,9 +548,9 @@ def evaluate_classification(
     # Uncertainty metrics
     # --------------------------------------------------------
 
-    unc_metrics = uncertainty_metrics(
-        all_confidences,
-        all_correct,
+    uncertainty_metrics(
+        y_true,
+        y_probs,
     )
 
     logger.info(
@@ -748,19 +748,21 @@ def evaluate_mc_dropout(
     mc_samples=30,
 ):
     """
-    Evaluate Monte Carlo Dropout uncertainty.
+    Estimate predictive uncertainty using MC Dropout.
 
-    IMPORTANT:
+    Confidence is defined consistently with live inference:
 
-    MC confidence is the actual probability of the
-    predicted class:
+        confidence = maximum predicted-class probability
 
-        max(mean Monte Carlo probabilities)
+    Entropy and mutual information are reported separately.
 
-    It is NOT entropy-derived certainty.
+    A case is considered uncertain when:
 
-    Predictive entropy and mutual information are
-    reported separately.
+        1. predicted-class probability < UNCERTAINTY_THRESHOLD
+
+    OR
+
+        2. mutual information > epistemic threshold
     """
 
     logger.info(
@@ -771,36 +773,71 @@ def evaluate_mc_dropout(
     mc_confidences = []
     mc_entropies = []
     mc_mutual_infos = []
-    mc_uncertain_flags = []
+
+    confidence_threshold = float(
+        getattr(
+            settings,
+            "UNCERTAINTY_THRESHOLD",
+            0.75,
+        )
+    )
+
+    # Keep this consistent with inference.py
+    mutual_information_threshold = 0.30
 
     # --------------------------------------------------------
     # Enable dropout
     # --------------------------------------------------------
 
-    classifier.enable_mc_dropout()
+    # --------------------------------------------------------
+    # Enable ONLY dropout layers.
+    #
+    # Keep the complete classifier in eval mode so that
+    # BatchNorm and other evaluation-time layers remain stable.
+    # This matches inference.py.
+    # --------------------------------------------------------
+
+    classifier.eval()
+
+    for module in classifier.modules():
+
+        if isinstance(
+                module,
+                (
+                        torch.nn.Dropout,
+                        torch.nn.Dropout1d,
+                        torch.nn.Dropout2d,
+                        torch.nn.Dropout3d,
+                        torch.nn.AlphaDropout,
+                ),
+        ):
+            module.train()
 
     try:
+
+        # --------------------------------------------------------
+        # Evaluate only the first 10 batches
+        # --------------------------------------------------------
+
+        max_mc_batches = min(
+            10,
+            len(loader),
+        )
 
         with torch.no_grad():
 
             for batch_idx, (
-                images,
-                labels,
+                    images,
+                    labels,
             ) in enumerate(loader):
 
-                # ------------------------------------------------
-                # CPU safety limit
-                # ------------------------------------------------
-
-                if batch_idx >= 10:
+                if batch_idx >= max_mc_batches:
                     break
 
-                images = images.to(
-                    device
-                )
+                images = images.to(device)
 
                 # ------------------------------------------------
-                # Generate segmentation guidance once
+                # Generate segmentation guidance
                 # ------------------------------------------------
 
                 segmentation_guidance = (
@@ -811,15 +848,13 @@ def evaluate_mc_dropout(
                     )
                 )
 
-                # ------------------------------------------------
-                # Monte Carlo forward passes
-                # ------------------------------------------------
-
                 all_probs_mc = []
 
-                for _ in range(
-                    mc_samples
-                ):
+                # ------------------------------------------------
+                # MC forward passes
+                # ------------------------------------------------
+
+                for _ in range(mc_samples):
 
                     logits = classifier(
                         images,
@@ -841,9 +876,7 @@ def evaluate_mc_dropout(
                 )
 
                 # Shape:
-                #
                 # [MC samples, batch, classes]
-                #
 
                 mean_probs = (
                     all_probs_mc.mean(
@@ -860,23 +893,15 @@ def evaluate_mc_dropout(
 
                 mean_probs = (
                     mean_probs
-                    /
-                    mean_probs.sum(
+                    / mean_probs.sum(
                         axis=1,
                         keepdims=True,
                     )
                 )
 
                 # ------------------------------------------------
-                # Predicted-class probability
+                # Actual predicted-class confidence
                 # ------------------------------------------------
-
-                predicted_indices = (
-                    np.argmax(
-                        mean_probs,
-                        axis=1,
-                    )
-                )
 
                 top_probabilities = (
                     np.max(
@@ -901,11 +926,9 @@ def evaluate_mc_dropout(
 
                 # ------------------------------------------------
                 # Expected entropy
-                #
-                # E[predictive entropy]
                 # ------------------------------------------------
 
-                sample_entropies = (
+                expected_entropy = (
                     -np.sum(
                         all_probs_mc
                         * np.log2(
@@ -916,20 +939,11 @@ def evaluate_mc_dropout(
                             )
                         ),
                         axis=2,
-                    )
-                )
-
-                expected_entropy = (
-                    sample_entropies.mean(
-                        axis=0
-                    )
+                    ).mean(axis=0)
                 )
 
                 # ------------------------------------------------
                 # Mutual information
-                #
-                # MI = predictive entropy
-                #      - expected entropy
                 # ------------------------------------------------
 
                 mutual_information = np.maximum(
@@ -939,40 +953,7 @@ def evaluate_mc_dropout(
                 )
 
                 # ------------------------------------------------
-                # Uncertainty decision
-                #
-                # Keep this consistent with the production
-                # inference implementation.
-                # ------------------------------------------------
-
-                confidence_threshold = float(
-                    getattr(
-                        settings,
-                        "UNCERTAINTY_THRESHOLD",
-                        0.75,
-                    )
-                )
-
-                mutual_information_threshold = 0.30
-
-                low_class_confidence = (
-                    top_probabilities
-                    < confidence_threshold
-                )
-
-                high_epistemic_uncertainty = (
-                    mutual_information
-                    > mutual_information_threshold
-                )
-
-                is_uncertain = (
-                    low_class_confidence
-                    |
-                    high_epistemic_uncertainty
-                )
-
-                # ------------------------------------------------
-                # Store
+                # Store metrics
                 # ------------------------------------------------
 
                 mc_confidences.extend(
@@ -987,41 +968,55 @@ def evaluate_mc_dropout(
                     mutual_information.tolist()
                 )
 
-                mc_uncertain_flags.extend(
-                    is_uncertain.tolist()
-                )
-
-                # ------------------------------------------------
-                # Progress
-                # ------------------------------------------------
-
                 if (
-                    batch_idx % 2 == 0
-                    or batch_idx == 9
+                        batch_idx % 2 == 0
+                        or batch_idx == max_mc_batches - 1
                 ):
-
                     logger.info(
                         f"MC Batch "
-                        f"{batch_idx + 1}/10"
+                        f"{batch_idx + 1}/{max_mc_batches}"
                     )
 
     finally:
 
-        # --------------------------------------------------------
         # Always restore normal inference mode
-        # --------------------------------------------------------
+        classifier.eval()
 
-        classifier.disable_mc_dropout()
-
-    # ============================================================
-    # FINAL METRICS
-    # ============================================================
+    # --------------------------------------------------------
+    # Calculate final metrics
+    # --------------------------------------------------------
 
     if mc_confidences:
 
+        mc_confidences = np.asarray(
+            mc_confidences,
+            dtype=np.float64,
+        )
+
+        mc_entropies = np.asarray(
+            mc_entropies,
+            dtype=np.float64,
+        )
+
+        mc_mutual_infos = np.asarray(
+            mc_mutual_infos,
+            dtype=np.float64,
+        )
+
+        uncertain_cases = (
+            (
+                mc_confidences
+                < confidence_threshold
+            )
+            |
+            (
+                mc_mutual_infos
+                > mutual_information_threshold
+            )
+        )
+
         mc_metrics = {
 
-            # Actual predicted-class probability
             "avg_mc_confidence":
                 float(
                     np.mean(
@@ -1046,21 +1041,15 @@ def evaluate_mc_dropout(
             "uncertain_cases_ratio":
                 float(
                     np.mean(
-                        mc_uncertain_flags
+                        uncertain_cases
                     )
                 ),
 
             "confidence_threshold":
-                float(
-                    getattr(
-                        settings,
-                        "UNCERTAINTY_THRESHOLD",
-                        0.75,
-                    )
-                ),
+                confidence_threshold,
 
             "mutual_information_threshold":
-                0.30,
+                mutual_information_threshold,
         }
 
     else:
@@ -1076,17 +1065,15 @@ def evaluate_mc_dropout(
             "uncertain_cases_ratio": 0.0,
 
             "confidence_threshold":
-                float(
-                    getattr(
-                        settings,
-                        "UNCERTAINTY_THRESHOLD",
-                        0.75,
-                    )
-                ),
+                confidence_threshold,
 
             "mutual_information_threshold":
-                0.30,
+                mutual_information_threshold,
         }
+
+    # --------------------------------------------------------
+    # Logging
+    # --------------------------------------------------------
 
     logger.info(
         f"MC Confidence: "
@@ -1187,15 +1174,79 @@ def main():
     # Take only requested number of test samples
     # --------------------------------------------------------
 
+    # --------------------------------------------------------
+    # Stratified evaluation subset
+    # --------------------------------------------------------
+    # Keep the evaluation subset balanced across tumor classes.
+    # This makes Accuracy, Macro-F1 and AUC more representative.
+
     figshare_eval_count = min(
         args.eval_samples,
         len(full_figshare_test_ds),
     )
 
+    # Collect labels from the full test pool
+    labels = np.array([
+        label
+        for _, label in full_figshare_test_ds.samples
+    ])
+
+    num_classes = settings.NUM_CLASSES
+
+    rng = np.random.default_rng(42)
+
+    selected_indices = []
+
+    # Allocate approximately equal samples to each class
+    samples_per_class = figshare_eval_count // num_classes
+    remainder = figshare_eval_count % num_classes
+
+    for class_idx in range(num_classes):
+
+        class_indices = np.where(
+            labels == class_idx
+        )[0]
+
+        rng.shuffle(class_indices)
+
+        take = samples_per_class
+
+        if class_idx < remainder:
+            take += 1
+
+        take = min(
+            take,
+            len(class_indices)
+        )
+
+        selected_indices.extend(
+            class_indices[:take].tolist()
+        )
+
+    # Shuffle final evaluation set
+    rng.shuffle(selected_indices)
+
     test_cls_ds = Subset(
         full_figshare_test_ds,
-        range(figshare_eval_count),
+        selected_indices,
     )
+
+    logger.info(
+        "Using stratified Figshare evaluation subset: "
+        f"{len(test_cls_ds)} samples"
+    )
+
+    for class_idx in range(num_classes):
+        count = sum(
+            labels[i] == class_idx
+            for i in selected_indices
+        )
+
+        logger.info(
+            f"Class {class_idx} "
+            f"({settings.TUMOR_CLASSES[class_idx]}): "
+            f"{count} samples"
+        )
 
     logger.info(
         f"Full Figshare test pool: "
