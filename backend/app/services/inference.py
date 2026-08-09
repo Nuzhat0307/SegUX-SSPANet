@@ -1,22 +1,39 @@
 """
-Inference service — orchestrates the full SegUX-SSPANet pipeline:
+Inference service for SegUX-SSPANet.
 
-1. Preprocessing
-2. Classification (SSPANet + ResNet50)
-3. Segmentation (U-Net)
-4. Explainability (GradCAM, GradCAM++, EigenGradCAM)
-5. Uncertainty estimation (Monte Carlo Dropout)
+Pipeline:
 
-When the trained PyTorch checkpoint is available, the real model
-is used. Otherwise, the service falls back to deterministic mock
-inference for development.
+1. Decode MRI
+2. Classification preprocessing
+3. U-Net segmentation
+4. Segmentation-guided SegUX-SSPANet classification
+5. Monte Carlo Dropout uncertainty
+6. Segmentation visualization
+7. GradCAM / GradCAM++ / EigenGradCAM
+8. Return API-safe result
+
+IMPORTANT:
+The classifier was trained with segmentation guidance, therefore
+inference MUST also pass the U-Net segmentation guidance to the
+classifier.
+
+Class mapping:
+    0 = glioma
+    1 = meningioma
+    2 = pituitary
+    3 = no_tumor
+
+Dice score:
+    Dice requires a ground-truth segmentation mask.
+    A newly uploaded MRI has no ground truth, so Dice is returned
+    as None rather than inventing an accuracy value.
 """
 
 import base64
-import io
 import time
 from io import BytesIO
 from typing import Dict, Any, List
+
 import numpy as np
 from PIL import Image
 from loguru import logger
@@ -49,25 +66,27 @@ class InferenceService:
         self._device = "cpu"
         self._loaded = False
 
-    # --------------------------------------------------------
+    # ========================================================
     # MODEL STATUS
-    # --------------------------------------------------------
+    # ========================================================
 
     def is_loaded(self) -> bool:
-        """Return True when the trained checkpoint is loaded."""
         return self._loaded
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOAD TRAINED MODELS
-    # --------------------------------------------------------
+    # ========================================================
 
     def load_models(self):
         """
-        Load the trained classifier and segmentation model.
+        Load the trained SegUX-SSPANet classifier and U-Net.
 
-        The checkpoint must contain:
-            classifier
-            segmentor
+        Expected checkpoint:
+
+            {
+                "classifier": ...,
+                "segmentor": ...
+            }
         """
 
         import os
@@ -86,27 +105,28 @@ class InferenceService:
         )
 
         if not os.path.exists(checkpoint_path):
-
             logger.error(
                 f"MODEL CHECKPOINT NOT FOUND: {checkpoint_path}"
             )
-
             self._loaded = False
             return
 
         try:
-
             from ml.models.segux_sspanet import SegUXSSPANet
             from ml.models.unet import UNet
 
             # ------------------------------------------------
-            # Create models
+            # Create classifier
             # ------------------------------------------------
 
             self._model = SegUXSSPANet(
                 num_classes=settings.NUM_CLASSES,
                 backbone="resnet50",
             ).to(self._device)
+
+            # ------------------------------------------------
+            # Create segmentation model
+            # ------------------------------------------------
 
             self._segmentor = UNet(
                 in_channels=1,
@@ -127,30 +147,29 @@ class InferenceService:
             )
 
             # ------------------------------------------------
-            # Load classifier
+            # Classifier weights
             # ------------------------------------------------
 
-            if isinstance(checkpoint, dict) and "classifier" in checkpoint:
-
+            if (
+                isinstance(checkpoint, dict)
+                and "classifier" in checkpoint
+            ):
                 self._model.load_state_dict(
                     checkpoint["classifier"]
                 )
-
             else:
-
                 self._model.load_state_dict(
                     checkpoint
                 )
 
             # ------------------------------------------------
-            # Load segmentor
+            # Segmentor weights
             # ------------------------------------------------
 
             if (
                 isinstance(checkpoint, dict)
                 and "segmentor" in checkpoint
             ):
-
                 self._segmentor.load_state_dict(
                     checkpoint["segmentor"]
                 )
@@ -158,9 +177,7 @@ class InferenceService:
                 logger.info(
                     "Segmentation model weights loaded."
                 )
-
             else:
-
                 logger.warning(
                     "No 'segmentor' weights found in checkpoint."
                 )
@@ -198,9 +215,9 @@ class InferenceService:
                 f"FAILED TO LOAD TRAINED MODEL: {e}"
             )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PREDICT
-    # --------------------------------------------------------
+    # ========================================================
 
     async def predict(
         self,
@@ -208,23 +225,28 @@ class InferenceService:
         patient_id: str,
     ) -> Dict[str, Any]:
         """
-        Run inference on a base64-encoded MRI image.
+        Run inference on a base64 encoded MRI image.
         """
 
         start_time = time.time()
 
         # ----------------------------------------------------
-        # Decode image
+        # Decode base64
         # ----------------------------------------------------
-        # Remove data URL prefix if present
+
         if "," in image_base64:
-            image_base64 = image_base64.split(",", 1)[1]
+            image_base64 = image_base64.split(
+                ",",
+                1,
+            )[1]
 
-        # Decode Base64
-        image_bytes = base64.b64decode(image_base64)
+        image_bytes = base64.b64decode(
+            image_base64
+        )
 
-        # Open image and convert grayscale MRI to 3-channel RGB
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        image = Image.open(
+            BytesIO(image_bytes)
+        ).convert("RGB")
 
         # ----------------------------------------------------
         # REAL MODEL
@@ -276,16 +298,14 @@ class InferenceService:
 
         return result
 
-    # --------------------------------------------------------
+    # ========================================================
     # BASE64 DECODER
-    # --------------------------------------------------------
+    # ========================================================
 
     def _decode_base64_image(
         self,
         b64_str: str,
     ) -> bytes:
-
-        """Decode a base64 data URL or raw base64 string."""
 
         if "," in b64_str:
             b64_str = b64_str.split(
@@ -302,59 +322,181 @@ class InferenceService:
     # ========================================================
 
     def _real_inference(
-            self,
-            image: Image.Image,
+        self,
+        image: Image.Image,
     ) -> Dict[str, Any]:
 
-        """Run actual trained PyTorch inference."""
+        """
+        Real SegUX-SSPANet inference.
+
+        IMPORTANT:
+
+        Classification was trained using segmentation guidance.
+
+        Therefore:
+
+            MRI
+             ↓
+            grayscale
+             ↓
+            U-Net
+             ↓
+            segmentation guidance
+             ↓
+            SegUX-SSPANet(image, guidance)
+
+        must be preserved.
+        """
 
         import torch
+        import torch.nn.functional as F
 
         # ====================================================
-        # CLASSIFICATION PREPROCESSING
+        # 1. CLASSIFICATION PREPROCESSING
         # ====================================================
 
-        # Make absolutely sure the MRI is RGB.
-        image_rgb = image.convert("RGB")
+        # FigshareDataset does:
+        #
+        #   RGB -> grayscale
+        #   resize 224x224
+        #   normalize /255
+        #   grayscale -> 3 channels
+        #
+        # Reproduce exactly.
+
+        gray_image = image.convert("L")
+
+        classification_image = gray_image.resize(
+            (
+                settings.IMAGE_SIZE,
+                settings.IMAGE_SIZE,
+            )
+        )
 
         img_array = np.array(
-            image_rgb.resize(
-                (
-                    settings.IMAGE_SIZE,
-                    settings.IMAGE_SIZE,
-                )
-            ),
+            classification_image,
             dtype=np.float32,
-        )
+        ) / 255.0
 
-        # HWC -> CHW
-        # (224, 224, 3) -> (3, 224, 224)
-        img_array = np.transpose(
-            img_array,
-            (2, 0, 1),
-        )
-
-        # Add batch dimension
-        # (3, 224, 224) -> (1, 3, 224, 224)
+        # H,W -> 1,H,W
         img_tensor = (
-                torch.from_numpy(img_array)
-                .float()
-                .unsqueeze(0)
-                .to(self._device)
-                / 255.0
+            torch.from_numpy(
+                img_array
+            )
+            .unsqueeze(0)
+        )
+
+        # 1,H,W -> 3,H,W
+        img_tensor = img_tensor.repeat(
+            3,
+            1,
+            1,
+        )
+
+        # 3,H,W -> 1,3,H,W
+        img_tensor = (
+            img_tensor
+            .unsqueeze(0)
+            .to(self._device)
         )
 
         logger.info(
-            f"Classification input shape: {tuple(img_tensor.shape)}"
+            f"Classification input shape: "
+            f"{tuple(img_tensor.shape)}"
         )
 
         # ====================================================
-        # CLASSIFICATION
+        # 2. U-NET SEGMENTATION
         # ====================================================
 
+        # Convert the same grayscale classification image
+        # to U-Net input size.
+
+        grayscale = img_tensor.mean(
+            dim=1,
+            keepdim=True,
+        )
+
+        segmentation_input = F.interpolate(
+            grayscale,
+            size=(
+                settings.SEGMENTATION_SIZE,
+                settings.SEGMENTATION_SIZE,
+            ),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        logger.info(
+            f"Segmentation input shape: "
+            f"{tuple(segmentation_input.shape)}"
+        )
+
+        self._segmentor.eval()
+
         with torch.no_grad():
+
+            segmentation_logits = (
+                self._segmentor(
+                    segmentation_input
+                )
+            )
+
+            full_seg_mask_tensor = (
+                torch.sigmoid(
+                    segmentation_logits
+                )
+            )
+
+        logger.info(
+            f"Segmentation output shape: "
+            f"{tuple(full_seg_mask_tensor.shape)}"
+        )
+
+        # ====================================================
+        # 3. SEGMENTATION GUIDANCE
+        # ====================================================
+
+        # Resize U-Net output from 256x256 to
+        # classifier input size 224x224.
+
+        segmentation_guidance = F.interpolate(
+            full_seg_mask_tensor,
+            size=img_tensor.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        segmentation_guidance = (
+            segmentation_guidance.clamp(
+                0.0,
+                1.0,
+            )
+        )
+
+        logger.info(
+            f"Segmentation guidance shape: "
+            f"{tuple(segmentation_guidance.shape)}"
+        )
+
+        logger.info(
+            "Segmentation guidance range: "
+            f"min={segmentation_guidance.min().item():.4f}, "
+            f"max={segmentation_guidance.max().item():.4f}, "
+            f"mean={segmentation_guidance.mean().item():.4f}"
+        )
+
+        # ====================================================
+        # 4. CLASSIFICATION
+        # ====================================================
+
+        self._model.eval()
+
+        with torch.no_grad():
+
             logits = self._model(
-                img_tensor
+                img_tensor,
+                segmentation_guidance,
             )
 
             probs = (
@@ -366,78 +508,55 @@ class InferenceService:
                 .numpy()[0]
             )
 
+        # Safety check
+        if len(probs) != len(
+            settings.TUMOR_CLASSES
+        ):
+            raise RuntimeError(
+                "Number of model outputs does not match "
+                "settings.TUMOR_CLASSES"
+            )
+
+        logger.info(
+            "Classification probabilities: "
+            + str(
+                {
+                    cls: round(
+                        float(probs[i]),
+                        6,
+                    )
+                    for i, cls in enumerate(
+                        settings.TUMOR_CLASSES
+                    )
+                }
+            )
+        )
+
         # ====================================================
-        # MC DROPOUT UNCERTAINTY
+        # 5. MC DROPOUT UNCERTAINTY
         # ====================================================
 
         uncertainty = (
             self._mc_dropout_uncertainty(
-                img_tensor
+                img_tensor,
+                segmentation_guidance,
             )
         )
 
         # ====================================================
-        # SEGMENTATION PREPROCESSING
-        # ====================================================
-
-        # U-Net was created with in_channels=1,
-        # so segmentation should receive grayscale.
-        gray_image = image_rgb.convert("L")
-
-        seg_array = np.array(
-            gray_image.resize(
-                (
-                    settings.SEGMENTATION_SIZE,
-                    settings.SEGMENTATION_SIZE,
-                )
-            ),
-            dtype=np.float32,
-        )
-
-        # H,W -> 1,H,W -> 1,1,H,W
-        seg_input = (
-                torch.from_numpy(seg_array)
-                .float()
-                .unsqueeze(0)
-                .unsqueeze(0)
-                .to(self._device)
-                / 255.0
-        )
-
-        logger.info(
-            f"Segmentation input shape: {tuple(seg_input.shape)}"
-        )
-
-        # ====================================================
-        # SEGMENTATION
-        # ====================================================
-
-        with torch.no_grad():
-            seg_output = self._segmentor(
-                seg_input
-            )
-
-            seg_mask = (
-                torch.sigmoid(
-                    seg_output
-                )
-                .cpu()
-                .numpy()[0, 0]
-            )
-
-        # ====================================================
-        # GRADCAM
+        # 6. GRADCAM
         # ====================================================
 
         gradcam_results = (
             self._compute_gradcam(
                 img_tensor,
-                image_rgb,
+                segmentation_guidance,
+                image,
             )
         )
 
         # ====================================================
-        # CLASSIFICATION RESULT
+        # 7. CLASSIFICATION RESULT
         # ====================================================
 
         predicted_idx = int(
@@ -453,8 +572,9 @@ class InferenceService:
         probabilities = []
 
         for i, cls in enumerate(
-                settings.TUMOR_CLASSES
+            settings.TUMOR_CLASSES
         ):
+
             probabilities.append(
                 {
                     "label": cls,
@@ -476,21 +596,29 @@ class InferenceService:
         )
 
         # ====================================================
-        # SEGMENTATION RESULT
+        # 8. SEGMENTATION RESULT
         # ====================================================
+
+        full_seg_mask = (
+            full_seg_mask_tensor
+            .detach()
+            .cpu()
+            .numpy()[0, 0]
+        )
 
         segmentation = (
             self._build_segmentation_result(
-                seg_mask,
-                image_rgb,
+                full_seg_mask,
+                image,
             )
         )
 
         # ====================================================
-        # FINAL RESULT
+        # 9. FINAL RESULT
         # ====================================================
 
         return {
+
             "predicted_class":
                 predicted_class,
 
@@ -514,60 +642,77 @@ class InferenceService:
         }
 
     # ========================================================
-    # MC DROPOUT
+    # MC DROPOUT UNCERTAINTY
     # ========================================================
 
     def _mc_dropout_uncertainty(
-            self,
-            img_tensor,
+        self,
+        img_tensor,
+        segmentation_guidance,
     ) -> Dict[str, Any]:
 
-        """Monte Carlo Dropout uncertainty estimation."""
+        """
+        Monte Carlo Dropout uncertainty.
+
+        IMPORTANT:
+
+        The returned `confidence` is the actual probability
+        of the predicted class.
+
+        Example:
+
+            [0.02, 0.91, 0.04, 0.03]
+
+        confidence = 0.91
+
+        We do NOT use entropy-derived certainty as the
+        displayed confidence because that can produce values
+        such as 5.7% even when the predicted class probability
+        is 33.3%.
+        """
 
         import torch
         import torch.nn as nn
 
-        # ----------------------------------------------------
-        # Keep the complete model in evaluation mode first.
-        # This prevents BatchNorm from trying to calculate
-        # statistics from a single image.
-        # ----------------------------------------------------
+        # ====================================================
+        # Keep BatchNorm in evaluation mode
+        # ====================================================
 
         self._model.eval()
 
-        # ----------------------------------------------------
-        # Enable ONLY Dropout layers.
-        # Do NOT call self._model.train(), because that would
-        # also put BatchNorm layers into training mode.
-        # ----------------------------------------------------
+        # ====================================================
+        # Enable ONLY dropout layers
+        # ====================================================
 
         for module in self._model.modules():
 
             if isinstance(
-                    module,
-                    (
-                            nn.Dropout,
-                            nn.Dropout1d,
-                            nn.Dropout2d,
-                            nn.Dropout3d,
-                            nn.AlphaDropout,
-                    ),
+                module,
+                (
+                    nn.Dropout,
+                    nn.Dropout1d,
+                    nn.Dropout2d,
+                    nn.Dropout3d,
+                    nn.AlphaDropout,
+                ),
             ):
                 module.train()
 
-        # ----------------------------------------------------
-        # Monte Carlo forward passes
-        # ----------------------------------------------------
+        # ====================================================
+        # Monte Carlo samples
+        # ====================================================
 
         all_probs = []
 
         with torch.no_grad():
 
             for _ in range(
-                    settings.MC_DROPOUT_SAMPLES
+                settings.MC_DROPOUT_SAMPLES
             ):
+
                 logits = self._model(
-                    img_tensor
+                    img_tensor,
+                    segmentation_guidance,
                 )
 
                 probs = (
@@ -579,85 +724,189 @@ class InferenceService:
                     .numpy()[0]
                 )
 
-                all_probs.append(probs)
+                all_probs.append(
+                    probs
+                )
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Return the model completely to evaluation mode.
-        # ----------------------------------------------------
+        # ====================================================
+        # Restore evaluation mode
+        # ====================================================
 
         self._model.eval()
 
-        all_probs = np.array(
-            all_probs
+        all_probs = np.asarray(
+            all_probs,
+            dtype=np.float64,
+        )
+
+        mean_probs = all_probs.mean(
+            axis=0
+        )
+
+        # Numerical safety
+        mean_probs = np.clip(
+            mean_probs,
+            1e-10,
+            1.0,
         )
 
         mean_probs = (
-            all_probs.mean(axis=0)
-        )
-
-        # ----------------------------------------------------
-        # Predictive entropy
-        # ----------------------------------------------------
-
-        pred_entropy = -np.sum(
             mean_probs
-            * np.log2(
-                mean_probs + 1e-10
-            )
+            / mean_probs.sum()
         )
 
-        # ----------------------------------------------------
-        # Expected entropy
-        # ----------------------------------------------------
+        # ====================================================
+        # PREDICTED CLASS PROBABILITY
+        # ====================================================
 
-        expected_entropy = np.mean(
-            [
-                -np.sum(
-                    p
-                    * np.log2(
-                        p + 1e-10
-                    )
-                )
-                for p in all_probs
+        top_probability = float(
+            np.max(mean_probs)
+        )
+
+        predicted_idx = int(
+            np.argmax(mean_probs)
+        )
+
+        predicted_class = (
+            settings.TUMOR_CLASSES[
+                predicted_idx
             ]
         )
 
-        # ----------------------------------------------------
-        # Mutual information
-        # ----------------------------------------------------
+        # ====================================================
+        # PREDICTIVE ENTROPY
+        # ====================================================
 
-        mutual_info = (
+        pred_entropy = float(
+            -np.sum(
+                mean_probs
+                * np.log2(
+                    mean_probs
+                )
+            )
+        )
+
+        # ====================================================
+        # EXPECTED ENTROPY
+        # ====================================================
+
+        expected_entropy = float(
+            np.mean(
+                [
+                    -np.sum(
+                        p
+                        * np.log2(
+                            np.clip(
+                                p,
+                                1e-10,
+                                1.0,
+                            )
+                        )
+                    )
+                    for p in all_probs
+                ]
+            )
+        )
+
+        # ====================================================
+        # MUTUAL INFORMATION
+        # ====================================================
+
+        mutual_info = max(
+            0.0,
+            float(
                 pred_entropy
                 - expected_entropy
+            ),
         )
 
-        # ----------------------------------------------------
-        # Confidence
-        # ----------------------------------------------------
+        # ====================================================
+        # ENTROPY-BASED CERTAINTY
+        # ====================================================
 
-        max_entropy = np.log2(
-            settings.NUM_CLASSES
+        # Keep this as an additional diagnostic metric.
+        # It is NOT exposed as "confidence".
+
+        max_entropy = float(
+            np.log2(
+                settings.NUM_CLASSES
+            )
         )
 
-        confidence = (
-                1
-                - pred_entropy / max_entropy
+        entropy_certainty = (
+            1.0
+            - (
+                pred_entropy
+                / max_entropy
+            )
         )
 
-        confidence = float(
+        entropy_certainty = float(
             np.clip(
-                confidence,
+                entropy_certainty,
                 0.0,
                 1.0,
             )
         )
 
-        # ----------------------------------------------------
-        # Final uncertainty result
-        # ----------------------------------------------------
+        # ====================================================
+        # UNCERTAINTY DECISION
+        # ====================================================
+
+        # Primary criterion:
+        # actual predicted-class probability.
+
+        confidence_threshold = float(
+            getattr(
+                settings,
+                "UNCERTAINTY_THRESHOLD",
+                0.75,
+            )
+        )
+
+        # Secondary criterion:
+        # genuinely high epistemic uncertainty.
+
+        mutual_information_threshold = 0.30
+
+        low_class_confidence = (
+            top_probability
+            < confidence_threshold
+        )
+
+        high_epistemic_uncertainty = (
+            mutual_info
+            > mutual_information_threshold
+        )
+
+        is_uncertain = bool(
+            low_class_confidence
+            or high_epistemic_uncertainty
+        )
+
+        # ====================================================
+        # LOGGING
+        # ====================================================
+
+        logger.info(
+            "MC Dropout uncertainty: "
+            f"predicted_class={predicted_class}, "
+            f"top_probability={top_probability:.4f}, "
+            f"entropy_certainty={entropy_certainty:.4f}, "
+            f"predictive_entropy={pred_entropy:.4f}, "
+            f"mutual_information={mutual_info:.4f}, "
+            f"low_class_confidence={low_class_confidence}, "
+            f"high_epistemic_uncertainty="
+            f"{high_epistemic_uncertainty}, "
+            f"is_uncertain={is_uncertain}"
+        )
+
+        # ====================================================
+        # RESULT
+        # ====================================================
 
         return {
+
             "method":
                 "monte_carlo_dropout",
 
@@ -668,21 +917,36 @@ class InferenceService:
                 float(pred_entropy),
 
             "mutual_information":
-                float(
-                    max(
-                        0,
-                        mutual_info,
-                    )
-                ),
+                float(mutual_info),
 
+            # IMPORTANT:
+            # This is the actual predicted-class probability.
             "confidence":
-                confidence,
+                top_probability,
+
+            # Explicit duplicate field for API consumers.
+            "top_probability":
+                top_probability,
+
+            # Additional diagnostic metric.
+            "entropy_certainty":
+                entropy_certainty,
+
+            "predicted_class":
+                predicted_class,
 
             "is_uncertain":
-                bool(
-                    confidence
-                    < settings.UNCERTAINTY_THRESHOLD
-                    or mutual_info > 0.3
+                is_uncertain,
+
+            "uncertainty_reason":
+                (
+                    "low_class_probability"
+                    if low_class_confidence
+                    else
+                    "high_epistemic_uncertainty"
+                    if high_epistemic_uncertainty
+                    else
+                    "none"
                 ),
         }
 
@@ -693,17 +957,21 @@ class InferenceService:
     def _compute_gradcam(
         self,
         img_tensor,
+        segmentation_guidance,
         image: Image.Image,
     ) -> List[Dict[str, str]]:
 
         """
         Compute GradCAM, GradCAM++, and EigenGradCAM.
 
-        If GradCAM cannot be computed, a fallback visualization
-        is returned.
+        The same segmentation guidance used for classification
+        is supplied to the classifier wrapper.
         """
 
         try:
+
+            import torch
+            import torch.nn as nn
 
             from pytorch_grad_cam import (
                 GradCAM,
@@ -715,9 +983,64 @@ class InferenceService:
                 show_cam_on_image,
             )
 
+            # ------------------------------------------------
+            # Guided classifier wrapper
+            # ------------------------------------------------
+
+            class GuidedClassifier(
+                nn.Module
+            ):
+
+                def __init__(
+                    self,
+                    model,
+                    guidance,
+                ):
+                    super().__init__()
+
+                    self.model = model
+                    self.guidance = guidance
+
+                def forward(self, x):
+
+                    return self.model(
+                        x,
+                        self.guidance,
+                    )
+
+            guided_model = GuidedClassifier(
+                self._model,
+                segmentation_guidance,
+            ).to(self._device)
+
+            guided_model.eval()
+
+            # ------------------------------------------------
+            # Target layer
+            # ------------------------------------------------
+
             target_layer = (
                 self._model.get_target_layer()
             )
+
+            # ------------------------------------------------
+            # Display image
+            # ------------------------------------------------
+
+            rgb_img = np.array(
+                image.resize(
+                    (
+                        settings.IMAGE_SIZE,
+                        settings.IMAGE_SIZE,
+                    )
+                ).convert("RGB")
+            ).astype(
+                np.float32
+            ) / 255.0
+
+            # ------------------------------------------------
+            # CAM methods
+            # ------------------------------------------------
 
             methods = [
                 (
@@ -736,64 +1059,77 @@ class InferenceService:
 
             results = []
 
-            rgb_img = np.array(
-                image.resize(
-                    (
-                        settings.IMAGE_SIZE,
-                        settings.IMAGE_SIZE,
-                    )
-                ).convert("RGB")
-            ) / 255.0
-
-            rgb_img = np.float32(
-                rgb_img
-            )
+            # ------------------------------------------------
+            # Generate CAMs
+            # ------------------------------------------------
 
             for name, CamClass in methods:
 
-                cam = CamClass(
-                    model=self._model,
-                    target_layers=[
-                        target_layer
-                    ],
-                )
+                try:
 
-                grayscale_cam = cam(
-                    input_tensor=img_tensor
-                )
-
-                grayscale_cam = (
-                    grayscale_cam[0]
-                )
-
-                visualization = (
-                    show_cam_on_image(
-                        rgb_img,
-                        grayscale_cam,
-                        use_rgb=True,
+                    cam = CamClass(
+                        model=guided_model,
+                        target_layers=[
+                            target_layer
+                        ],
                     )
-                )
 
-                heatmap_b64 = (
-                    self._encode_image_array(
-                        visualization
+                    grayscale_cam = cam(
+                        input_tensor=img_tensor
+                    )[0]
+
+                    visualization = (
+                        show_cam_on_image(
+                            rgb_img,
+                            grayscale_cam,
+                            use_rgb=True,
+                        )
                     )
-                )
 
-                overlay_b64 = (
-                    self._encode_image_array(
-                        visualization
+                    encoded = (
+                        self._encode_image_array(
+                            visualization
+                        )
                     )
+
+                    results.append(
+                        {
+                            "method":
+                                name,
+
+                            "heatmap_base64":
+                                encoded,
+
+                            "overlay_base64":
+                                encoded,
+                        }
+                    )
+
+                    try:
+                        cam.clear_hooks()
+                    except Exception:
+                        pass
+
+                except Exception as cam_error:
+
+                    logger.warning(
+                        f"{name} failed: "
+                        f"{cam_error}"
+                    )
+
+            # ------------------------------------------------
+            # Fallback
+            # ------------------------------------------------
+
+            if not results:
+
+                logger.warning(
+                    "All GradCAM methods failed. "
+                    "Using fallback visualization."
                 )
 
-                results.append(
-                    {
-                        "method": name,
-                        "heatmap_base64":
-                            heatmap_b64,
-                        "overlay_base64":
-                            overlay_b64,
-                    }
+                return self._mock_gradcam(
+                    image
                 )
 
             return results
@@ -820,6 +1156,10 @@ class InferenceService:
 
         import cv2
 
+        # ----------------------------------------------------
+        # Binary mask
+        # ----------------------------------------------------
+
         binary_mask = (
             mask > 0.5
         ).astype(
@@ -840,7 +1180,7 @@ class InferenceService:
         tumor_percentage = (
             tumor_pixels
             / total_pixels
-        ) * 100
+        ) * 100.0
 
         # ----------------------------------------------------
         # Bounding box
@@ -897,13 +1237,35 @@ class InferenceService:
             0,
         )
 
-        # ----------------------------------------------------
-        # NOTE:
-        # Dice cannot be calculated without ground truth.
-        # Do NOT present a random Dice value as real accuracy.
-        # ----------------------------------------------------
+        # ====================================================
+        # DICE
+        # ====================================================
+
+        # IMPORTANT:
+        #
+        # Dice requires:
+        #
+        #   predicted_mask
+        #   +
+        #   ground_truth_mask
+        #
+        # A newly uploaded MRI does not contain its
+        # ground-truth mask.
+        #
+        # Therefore Dice MUST be None.
+        #
+        # Never calculate Dice using the predicted mask
+        # against itself, because that would always produce
+        # 1.0 and would be completely misleading.
+
+        dice_score = None
+
+        # ====================================================
+        # RESULT
+        # ====================================================
 
         return {
+
             "mask_base64":
                 self._encode_image_array(
                     binary_mask
@@ -915,13 +1277,23 @@ class InferenceService:
                 ),
 
             "dice_score":
-                None,
+                dice_score,
+
+            "dice_available":
+                False,
+
+            "dice_note":
+                "Dice score is unavailable because "
+                "no ground-truth segmentation mask was "
+                "provided with this uploaded MRI.",
 
             "tumor_area_pixels":
                 tumor_pixels,
 
             "tumor_area_percentage":
-                float(tumor_percentage),
+                float(
+                    tumor_percentage
+                ),
 
             "bounding_box":
                 bbox,
@@ -939,8 +1311,7 @@ class InferenceService:
         """
         Deterministic mock inference.
 
-        This should only be reached if the trained checkpoint
-        cannot be loaded.
+        Used only when trained models are unavailable.
         """
 
         import cv2
@@ -1019,14 +1390,17 @@ class InferenceService:
         probabilities = [
             {
                 "label": cls,
+
                 "display_name":
                     TUMOR_DISPLAY.get(
                         cls,
                         cls,
                     ),
+
                 "probability":
                     float(probs[i]),
             }
+
             for i, cls in enumerate(
                 settings.TUMOR_CLASSES
             )
@@ -1049,7 +1423,9 @@ class InferenceService:
 
             noisy = (
                 probs
-                + rng.randn(4) * 0.05
+                + rng.randn(
+                    len(settings.TUMOR_CLASSES)
+                ) * 0.05
             )
 
             noisy = np.exp(
@@ -1067,41 +1443,74 @@ class InferenceService:
         )
 
         mean_probs = (
-            all_probs.mean(axis=0)
-        )
-
-        pred_entropy = -np.sum(
-            mean_probs
-            * np.log2(
-                mean_probs + 1e-10
+            all_probs.mean(
+                axis=0
             )
         )
 
-        expected_entropy = np.mean(
-            [
-                -np.sum(
-                    p
-                    * np.log2(
-                        p + 1e-10
-                    )
+        mean_probs = np.clip(
+            mean_probs,
+            1e-10,
+            1.0,
+        )
+
+        mean_probs /= mean_probs.sum()
+
+        top_probability = float(
+            mean_probs.max()
+        )
+
+        pred_entropy = float(
+            -np.sum(
+                mean_probs
+                * np.log2(
+                    mean_probs
                 )
-                for p in all_probs
-            ]
+            )
+        )
+
+        expected_entropy = float(
+            np.mean(
+                [
+                    -np.sum(
+                        p
+                        * np.log2(
+                            np.clip(
+                                p,
+                                1e-10,
+                                1.0,
+                            )
+                        )
+                    )
+                    for p in all_probs
+                ]
+            )
         )
 
         mutual_info = max(
-            0,
-            pred_entropy
-            - expected_entropy,
+            0.0,
+            float(
+                pred_entropy
+                - expected_entropy
+            ),
         )
 
-        confidence = (
-            1
-            - pred_entropy
-            / np.log2(4)
+        confidence_threshold = float(
+            getattr(
+                settings,
+                "UNCERTAINTY_THRESHOLD",
+                0.75,
+            )
+        )
+
+        is_uncertain = bool(
+            top_probability
+            < confidence_threshold
+            or mutual_info > 0.30
         )
 
         uncertainty = {
+
             "method":
                 "monte_carlo_dropout",
 
@@ -1109,18 +1518,30 @@ class InferenceService:
                 settings.MC_DROPOUT_SAMPLES,
 
             "predictive_entropy":
-                float(pred_entropy),
+                pred_entropy,
 
             "mutual_information":
-                float(mutual_info),
+                mutual_info,
 
             "confidence":
-                float(confidence),
+                top_probability,
+
+            "top_probability":
+                top_probability,
 
             "is_uncertain":
-                bool(
-                    confidence < 0.75
-                    or mutual_info > 0.3
+                is_uncertain,
+
+            "uncertainty_reason":
+                (
+                    "low_class_probability"
+                    if top_probability
+                    < confidence_threshold
+                    else
+                    "high_epistemic_uncertainty"
+                    if mutual_info > 0.30
+                    else
+                    "none"
                 ),
         }
 
@@ -1140,6 +1561,7 @@ class InferenceService:
         )
 
         return {
+
             "predicted_class":
                 predicted_class,
 
@@ -1175,9 +1597,7 @@ class InferenceService:
 
         import cv2
 
-        size = (
-            settings.SEGMENTATION_SIZE
-        )
+        size = settings.SEGMENTATION_SIZE
 
         img = np.array(
             image.resize(
@@ -1199,6 +1619,7 @@ class InferenceService:
             )
 
             return {
+
                 "mask_base64":
                     self._encode_image_array(
                         blank
@@ -1211,6 +1632,13 @@ class InferenceService:
 
                 "dice_score":
                     None,
+
+                "dice_available":
+                    False,
+
+                "dice_note":
+                    "Dice score is unavailable "
+                    "without a ground-truth mask.",
 
                 "tumor_area_pixels":
                     0,
@@ -1302,6 +1730,7 @@ class InferenceService:
         )
 
         return {
+
             "mask_base64":
                 self._encode_image_array(
                     mask
@@ -1314,6 +1743,13 @@ class InferenceService:
 
             "dice_score":
                 None,
+
+            "dice_available":
+                False,
+
+            "dice_note":
+                "Dice score is unavailable "
+                "without a ground-truth mask.",
 
             "tumor_area_pixels":
                 tumor_pixels,
@@ -1557,7 +1993,6 @@ class InferenceService:
         )
 
         if not success:
-
             raise RuntimeError(
                 "Failed to encode image"
             )
