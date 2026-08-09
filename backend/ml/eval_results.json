@@ -62,8 +62,8 @@
     "expected_calibration_error": 0.06729054729143778
   },
   "mc_dropout": {
-    "avg_mc_confidence": 0.790021488070488,
-    "avg_predictive_entropy": 0.41995702814310787,
+    "avg_mc_confidence": 0.7844655513763428,
+    "avg_predictive_entropy": 0.4310689032077789,
     "uncertain_cases_ratio": 0.3
   },
   "num_test_samples": 300

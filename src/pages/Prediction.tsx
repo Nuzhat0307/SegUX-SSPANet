@@ -214,10 +214,16 @@ export default function Prediction() {
               Uncertainty Detected — Expert Review Recommended
             </p>
             <p className="mt-0.5 text-sm text-warning-700">
-              The model's confidence is {formatConfidence(prediction.uncertainty.confidence)} with
-              high mutual information ({prediction.uncertainty.mutual_information.toFixed(4)}),
-              indicating epistemic uncertainty. This case may benefit from review by a specialist.
-            </p>
+  {prediction.uncertainty.uncertainty_reason === 'high_epistemic_uncertainty'
+    ? `The model's confidence is ${formatConfidence(
+        prediction.uncertainty.confidence
+      )}, with elevated epistemic uncertainty (mutual information ${
+        prediction.uncertainty.mutual_information
+      .toFixed(4)}). This case may benefit from review by a specialist.`
+    : `The model's confidence is ${formatConfidence(
+        prediction.uncertainty.confidence
+      )}, which is below the confidence threshold. This case may benefit from review by a specialist.`}
+</p>
           </div>
         </div>
       )}

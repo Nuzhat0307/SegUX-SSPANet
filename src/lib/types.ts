@@ -12,22 +12,36 @@ export interface UncertaintyEstimate {
   predictive_entropy: number
   mutual_information: number
   confidence: number
+  top_probability?: number
+  entropy_certainty?: number
+  predicted_class?: TumorClass
   is_uncertain: boolean
+  uncertainty_reason?:
+    | 'low_class_probability'
+    | 'high_epistemic_uncertainty'
+    | 'none'
+}
+
+export interface SegmentationResult {
+  mask_base64: string
+  overlay_base64: string
+  dice_score: number | null
+  dice_available?: boolean
+  dice_note?: string
+  tumor_area_pixels: number
+  tumor_area_percentage: number
+  bounding_box: {
+    x: number
+    y: number
+    width: number
+    height: number
+  } | null
 }
 
 export interface GradCAMResult {
   method: 'gradcam' | 'gradcam_plus_plus' | 'eigengradcam'
   heatmap_base64: string
   overlay_base64: string
-}
-
-export interface SegmentationResult {
-  mask_base64: string
-  overlay_base64: string
-  dice_score: number
-  tumor_area_pixels: number
-  tumor_area_percentage: number
-  bounding_box: { x: number; y: number; width: number; height: number } | null
 }
 
 export interface PredictionResult {
