@@ -33,50 +33,94 @@ export default function Reports() {
   const [search, setSearch] = useState('')
   const [classFilter, setClassFilter] = useState('all')
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    try {
-      // Load all predictions with their patients
-      const { data: predData } = await supabase
-        .from('predictions')
-        .select('*')
-        .order('created_at', { ascending: false })
+const loadData = useCallback(async () => {
+  setLoading(true)
 
-      const preds = (predData || []) as unknown as PredictionResult[]
-      setPredictions(preds)
+  try {
+    // Load all predictions
+    const { data: predData, error: predError } = await supabase
+      .from('predictions')
+      .select('*')
+      .order('created_at', { ascending: false })
 
-      // Load patients
-      if (preds.length > 0) {
-        const patientIds = [...new Set(preds.map((p) => p.patient_id))]
-        const { data: patData } = await supabase
+    if (predError) {
+      throw predError
+    }
+
+    const preds = (predData || []) as unknown as PredictionResult[]
+    setPredictions(preds)
+
+    // ---------------------------------------------------------
+    // Load patients and create the map BEFORE attaching patients
+    // to reports.
+    // ---------------------------------------------------------
+    const patMap = new Map<string, Patient>()
+
+    if (preds.length > 0) {
+      const patientIds = [
+        ...new Set(
+          preds
+            .map((p) => p.patient_id)
+            .filter(Boolean),
+        ),
+      ]
+
+      if (patientIds.length > 0) {
+        const { data: patData, error: patError } = await supabase
           .from('patients')
           .select('*')
           .in('id', patientIds)
-        const patMap = new Map<string, Patient>()
-        ;(patData || []).forEach((p: any) => patMap.set(p.id, p as Patient))
-        setPatients(patMap)
-      }
 
-      // Load existing reports
-      const { data: repData } = await supabase
-        .from('reports')
-        .select('*')
-        .order('created_at', { ascending: false })
-      const reps = (repData || []) as unknown as ReportRow[]
-      // Attach prediction + patient to each report
-      for (const rep of reps) {
-        rep.prediction = preds.find((p) => p.id === rep.prediction_id)
-        if (rep.prediction) {
-          rep.patient = patients.get(rep.prediction.patient_id)
+        if (patError) {
+          throw patError
         }
+
+        ;(patData || []).forEach((p: any) => {
+          patMap.set(p.id, p as Patient)
+        })
       }
-      setReports(reps)
-    } catch (err) {
-      console.error('Reports load error:', err)
-    } finally {
-      setLoading(false)
     }
-  }, [])
+
+    // Update React state after building the map
+    setPatients(patMap)
+
+    // ---------------------------------------------------------
+    // Load existing reports
+    // ---------------------------------------------------------
+    const { data: repData, error: repError } = await supabase
+      .from('reports')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (repError) {
+      throw repError
+    }
+
+    const reps = (repData || []) as unknown as ReportRow[]
+
+    // ---------------------------------------------------------
+    // Attach prediction + patient to every report
+    // IMPORTANT: use patMap, NOT patients state
+    // ---------------------------------------------------------
+    for (const rep of reps) {
+      rep.prediction = preds.find(
+        (p) => p.id === rep.prediction_id,
+      )
+
+      if (rep.prediction) {
+        rep.patient = patMap.get(
+          rep.prediction.patient_id,
+        )
+      }
+    }
+
+    setReports(reps)
+  } catch (err) {
+    console.error('Reports load error:', err)
+  } finally {
+    setLoading(false)
+  }
+}, [])
 
   useEffect(() => {
     loadData()
@@ -189,7 +233,9 @@ export default function Reports() {
                 </div>
                 {rep.prediction && rep.patient && (
                   <button
-                    onClick={() => handleGenerateReport(rep.prediction!)}
+                    onClick={() => {
+                      handleGenerateReport(rep.prediction!)
+                    }}
                     disabled={generatingId === rep.prediction_id}
                     className="btn-secondary text-xs"
                   >
