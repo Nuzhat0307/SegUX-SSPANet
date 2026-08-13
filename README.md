@@ -1,186 +1,463 @@
-# SegUX-SSPANet Brain Tumor Diagnosis System
+# SegUX-SSPANet — Brain Tumor Diagnosis System
 
-An AI-powered, hospital-ready web application for brain tumor diagnosis from MRI scans. The system integrates **segmentation-guided attention learning** with **uncertainty-aware deep learning** and **explainable AI** to provide clinicians with transparent, trustworthy diagnostic support.
+**SegUX-SSPANet** is an AI-assisted brain tumor analysis system that combines MRI classification, tumor segmentation, segmentation-guided feature learning, uncertainty estimation, and explainable AI into a web-based diagnostic support application.
 
-## Overview
+The project integrates a **ResNet-50 backbone**, **SSPANet attention modules**, a **U-Net segmentation model**, **Monte Carlo Dropout**, and **Grad-CAM-based explainability** with a React/FastAPI application.
 
-SegUX-SSPANet extends the SSPANet (Strip-Style Pooling Attention Network) framework with:
-
-- **Multi-task learning**: Simultaneous tumor classification + segmentation
-- **Segmentation-guided attention**: U-Net masks guide the attention maps for better localization
-- **Uncertainty estimation**: Monte Carlo Dropout quantifies prediction confidence
-- **Multi-method explainability**: GradCAM, GradCAM++, and EigenGradCAM visualizations
-- **Clinical decision support**: Flags low-confidence cases for expert review
-- **Downloadable PDF reports**: Professional diagnostic reports with all findings
-
-### Tumor Classes
-
-| Class | Description |
-|-------|-------------|
-| Glioma | Tumor originating in glial cells |
-| Meningioma | Tumor on brain/spinal cord membranes |
-| Pituitary | Tumor of the pituitary gland |
-| No Tumor | Normal scan — no tumor detected |
+> **Research and educational project:** This system is not intended to replace diagnosis by a qualified medical professional.
 
 ---
 
-## Architecture
+## 1. Project Overview
 
+SegUX-SSPANet is designed to analyze brain MRI images and provide:
+
+* Brain tumor type classification
+* Tumor-region segmentation
+* Segmentation-guided classification
+* Prediction confidence and uncertainty estimation
+* Grad-CAM, Grad-CAM++, and EigenGradCAM visualizations
+* Patient and prediction history
+* PDF diagnostic reports
+* Authentication and protected application routes
+* REST APIs for inference and report generation
+
+The system currently supports four model output classes:
+
+| Class ID | Class      |
+| -------: | ---------- |
+|        0 | Glioma     |
+|        1 | Meningioma |
+|        2 | Pituitary  |
+|        3 | No Tumor   |
+
+The class mapping is defined directly in the dataset implementation and application configuration.
+
+### Important Dataset Note
+
+Although the model configuration defines four classes, the local Figshare dataset used during development contained:
+
+* Glioma: 1,426 images
+* Meningioma: 708 images
+* Pituitary: 930 images
+* No Tumor: 0 images
+
+Therefore, the practical training/evaluation data used for the current development version did not contain `no_tumor` samples.
+
+---
+
+## 2. Key Features
+
+### MRI Classification
+
+The SegUX-SSPANet classifier uses a ResNet-50 backbone with SSPANet attention modules to classify MRI images into the configured tumor categories.
+
+### Tumor Segmentation
+
+A U-Net model is trained separately using BraTS-derived 2D MRI slices and corresponding segmentation masks.
+
+The current processed BraTS dataset used during development contains:
+
+* **4,798 processed image slices**
+* **4,798 corresponding segmentation masks**
+
+The training script intentionally uses a smaller subset for laptop-friendly training.
+
+### Segmentation-Guided Classification
+
+The segmentation model is not trained jointly with the classifier.
+
+Instead:
+
+```text
+BraTS images + masks
+        │
+        ▼
+      U-Net
+        │
+        ▼
+Best segmentation model
+        │
+        ▼
+Frozen during classification
+        │
+        ▼
+Segmentation guidance
+        │
+        ▼
+Figshare MRI ───────────────┐
+                            ▼
+                     SegUX-SSPANet
+                            │
+                            ▼
+                     Tumor prediction
 ```
+
+For Figshare classification images, the trained U-Net:
+
+1. Converts the 3-channel image to grayscale.
+2. Resizes it from `224 × 224` to `256 × 256`.
+3. Generates a segmentation probability map.
+4. Resizes the segmentation guidance back to `224 × 224`.
+5. Passes the original image and segmentation guidance to SegUX-SSPANet.
+
+This behavior is implemented directly in `train.py` and `evaluate.py`.
+
+---
+
+# 3. System Architecture
+
+```text
+                         ┌───────────────────────┐
+                         │      React / Vite      │
+                         │   Frontend Interface   │
+                         └───────────┬───────────┘
+                                     │
+                                     ▼
+                         ┌───────────────────────┐
+                         │      FastAPI API       │
+                         │ Authentication / REST  │
+                         └───────────┬───────────┘
+                                     │
+                  ┌──────────────────┼──────────────────┐
+                  │                  │                  │
+                  ▼                  ▼                  ▼
+             Prediction          Patients           Reports
+                  │
+                  ▼
+        ┌───────────────────────┐
+        │   SegUX-SSPANet        │
+        │ ResNet50 + SSPANet     │
+        └──────────┬────────────┘
+                   │
+                   │ Segmentation guidance
+                   ▼
+             ┌───────────┐
+             │   U-Net   │
+             │ Segmentor │
+             └───────────┘
+                   │
+                   ▼
+            Tumor Region Mask
+
+Additional AI services:
+        │
+        ├── MC Dropout
+        ├── Grad-CAM
+        ├── Grad-CAM++
+        └── EigenGradCAM
+
+Data / Storage:
+        │
+        └── Supabase / PostgreSQL
+```
+
+---
+
+# 4. Repository Structure
+
+```text
 SegUX-SSPANet/
-├── src/                          # Frontend (React + Vite + Tailwind)
-│   ├── components/               # Shared UI components
-│   ├── lib/                      # Supabase client, auth, types, mock inference, PDF
-│   ├── pages/                    # Dashboard, Upload, Prediction, History, Reports, Settings, Login, Register
-│   └── App.tsx                   # Router and protected routes
 │
-├── backend/                      # Backend (FastAPI + PyTorch)
+├── backend/
 │   ├── app/
-│   │   ├── api/routes.py         # REST API endpoints
-│   │   ├── core/                 # Config, security (JWT), database
-│   │   ├── models/               # SQLAlchemy ORM models
-│   │   ├── schemas/              # Pydantic request/response schemas
+│   │   ├── api/
+│   │   │   └── routes.py
+│   │   ├── core/
+│   │   │   ├── config.py
+│   │   │   └── security.py
+│   │   ├── models/
+│   │   ├── schemas/
 │   │   ├── services/
-│   │   │   ├── inference.py      # Full inference pipeline
+│   │   │   ├── inference.py
 │   │   │   └── report_generator.py
-│   │   └── main.py               # FastAPI app factory
+│   │   └── main.py
+│   │
 │   ├── ml/
 │   │   ├── models/
-│   │   │   ├── sspanet.py        # Strip-Style Pooling Attention Network
-│   │   │   ├── segux_sspanet.py  # Full multi-task model (ResNet50 + SSPANet)
-│   │   │   └── unet.py           # U-Net for segmentation
-│   │   ├── utils/
-│   │   │   ├── losses.py         # Dice Loss, BCE-Dice, Multi-task loss
-│   │   │   ├── metrics.py        # Classification, segmentation, uncertainty metrics
-│   │   │   └── gradcam_utils.py  # GradCAM/GradCAM++/EigenGradCAM
-│   │   └── data/dataset.py       # Figshare + BraTS dataset loaders
+│   │   │   ├── sspanet.py
+│   │   │   ├── segux_sspanet.py
+│   │   │   └── unet.py
+│   │   │
+│   │   ├── data/
+│   │   │   └── dataset.py
+│   │   │
+│   │   └── utils/
+│   │       ├── losses.py
+│   │       ├── metrics.py
+│   │       └── gradcam_utils.py
+│   │
 │   ├── scripts/
-│   │   ├── train.py              # Training pipeline
-│   │   ├── evaluate.py           # Evaluation script
-│   │   └── download_dataset.py   # Dataset download + preprocessing
+│   │   ├── train.py
+│   │   ├── evaluate.py
+│   │   └── download_dataset.py
+│   │
 │   └── requirements.txt
 │
-├── docker/                       # Nginx config
-├── Dockerfile                    # Frontend Docker
-├── docker-compose.yml            # Full deployment
+├── src/
+│   ├── components/
+│   ├── lib/
+│   ├── pages/
+│   └── App.tsx
+│
+├── public/
+├── supabase/
+│   └── migrations/
+│
+├── docker/
+├── Dockerfile
+├── docker-compose.yml
+├── package.json
+├── vite.config.ts
 └── README.md
 ```
 
----
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 18+ and npm
-- Python 3.11+ (for backend)
-- Docker and Docker Compose (for containerized deployment)
-
-### 1. Frontend (Web Application)
-
-```bash
-# Install dependencies
-npm install
-
-# Start the dev server
-npm run dev
-```
-
-The app will be available at `http://localhost:5173`.
-
-**Note**: The frontend works standalone with Supabase for auth and data storage. The in-browser mock inference engine produces realistic AI results (classification, segmentation, GradCAM, uncertainty) without requiring the Python backend — perfect for demos and development.
-
-### 2. Backend (FastAPI + PyTorch)
-
-```bash
-cd backend
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy and edit environment variables
-cp .env.example .env
-# Edit .env with your Supabase credentials
-
-# Start the API server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The API will be available at `http://localhost:8000` with Swagger docs at `http://localhost:8000/api/v1/docs`.
-
-### 3. Docker Deployment (Full Stack)
-
-```bash
-# Build and run all services
-docker-compose up --build
-
-# Or with local PostgreSQL
-docker-compose --profile local-db up --build
-```
-
-- Frontend: `http://localhost`
-- Backend API: `http://localhost:8000`
-- API Docs: `http://localhost:8000/api/v1/docs`
+The repository currently contains separate frontend, backend, ML, Supabase, and Docker components.
 
 ---
 
-## Training the AI Model
+# 5. AI Model Architecture
 
-### Step 1: Download Datasets
+## 5.1 ResNet-50 Backbone
 
-```bash
-cd backend
-source venv/bin/activate
+The classification network uses an ImageNet-pretrained ResNet-50 backbone.
 
-# Download and preprocess Figshare dataset
-python -m scripts.download_dataset --dataset figshare --output ml/data
+The feature stages are augmented with SSPANet attention modules.
 
-# Download and preprocess BraTS (requires manual download)
-# See instructions in the script output
-python -m scripts.download_dataset --dataset brats --output ml/data
+The implementation uses the feature dimensions:
+
+```text
+256 → 512 → 1024 → 2048
 ```
 
-**Figshare Brain Tumor Dataset**:
-- Auto-downloads from figshare.com
-- ~3,064 MRI images across 3 tumor classes
-- URL: https://figshare.com/articles/dataset/brain_tumor_dataset/1512427
+The final classification head performs global average pooling followed by fully connected layers and dropout.
 
-**BraTS (Brain Tumor Segmentation)**:
-- Requires free registration at https://www.synapse.org/brats
-- Provides multimodal MRI volumes with pixel-level segmentation masks
-- The script extracts 2D slices from NIfTI volumes
+---
 
-### Step 2: Train
+## 5.2 SSPANet Attention
 
-```bash
-# Full training (classification + segmentation)
-python -m scripts.train \
-    --epochs 50 \
-    --batch_size 16 \
-    --lr 1e-4 \
-    --figshare_dir ml/data/figshare \
-    --brats_dir ml/data/brats_2d \
-    --checkpoint_dir ml/checkpoints
+SSPANet is implemented using three complementary feature-processing streams:
 
-# Classification only (if BraTS not available)
-python -m scripts.train \
-    --epochs 50 \
-    --figshare_dir ml/data/figshare
+### Channel Attention
+
+Captures relationships between feature channels.
+
+### Strip Pooling
+
+Uses horizontal and vertical pooling to capture longer-range spatial information.
+
+### Style Pooling
+
+Uses statistical feature information such as mean and variance to represent texture/style characteristics.
+
+The resulting features are fused and incorporated into the network through a residual connection.
+
+Implementation:
+
+```text
+backend/ml/models/sspanet.py
 ```
 
-The training pipeline:
-1. Loads ResNet50 with ImageNet-pretrained weights
-2. Attaches SSPANet attention modules at each residual stage
-3. Trains classification head with CrossEntropy loss
-4. Trains U-Net segmentor with BCE + Dice loss
-5. Uses CosineAnnealing learning rate scheduling
-6. Saves the best checkpoint based on validation accuracy
+---
 
-### Step 3: Evaluate
+# 6. U-Net Segmentation
+
+The segmentation component is a standard U-Net encoder-decoder architecture.
+
+```text
+Input MRI
+   │
+   ▼
+Encoder
+64 → 128 → 256 → 512 → 1024
+   │
+   ▼
+Bottleneck
+   │
+   ▼
+Decoder
+1024 → 512 → 256 → 128 → 64
+   │
+   ▼
+1-channel output
+   │
+   ▼
+Tumor probability mask
+```
+
+The U-Net receives grayscale images at `256 × 256` resolution and produces a one-channel tumor probability map.
+
+Implementation:
+
+```text
+backend/ml/models/unet.py
+```
+
+---
+
+# 7. Training Methodology
+
+The current implementation uses **staged training**, rather than end-to-end simultaneous optimization of both networks.
+
+## Stage 1 — U-Net Segmentation Training
+
+BraTS-derived image-mask pairs are used to train the U-Net.
+
+Current configured training subset:
+
+```text
+Training samples:   500
+Validation samples: 200
+Image size:         256 × 256
+Batch size:         16
+Learning rate:      1 × 10⁻⁴
+Optimizer:          AdamW
+Weight decay:       1 × 10⁻⁴
+Epochs:             20
+```
+
+The segmentation objective uses BCE + Dice loss.
+
+The best U-Net checkpoint is selected according to validation Dice score:
+
+```text
+ml/checkpoints/segux_unet_best.pth
+```
+
+The implementation also creates recovery checkpoints during segmentation training.
+
+---
+
+## Stage 2 — SegUX-SSPANet Classification Training
+
+Figshare images are used for classification.
+
+Current configured subset:
+
+```text
+Training samples:   1,000
+Validation samples: 200
+Image size:         224 × 224
+Batch size:         16
+Learning rate:      1 × 10⁻⁴
+Optimizer:          AdamW
+Weight decay:       1 × 10⁻⁴
+Epochs:             50
+```
+
+During this stage, the U-Net parameters are frozen.
+
+For every Figshare image:
+
+```text
+MRI image
+    │
+    ├──────────────► SegUX-SSPANet
+    │
+    ▼
+ Frozen U-Net
+    │
+    ▼
+Segmentation guidance
+    │
+    └──────────────► SegUX-SSPANet
+                         │
+                         ▼
+                  Tumor classification
+```
+
+The classifier is optimized using CrossEntropyLoss.
+
+The best complete model is selected according to validation classification accuracy.
+
+---
+
+# 8. Training Configuration
+
+| Parameter                    | Current Configuration            |
+| ---------------------------- | -------------------------------- |
+| Classification backbone      | ResNet-50                        |
+| Attention                    | SSPANet                          |
+| Segmentation model           | U-Net                            |
+| Classification image size    | 224 × 224                        |
+| Segmentation image size      | 256 × 256                        |
+| Figshare training samples    | 1,000                            |
+| Figshare validation samples  | 200                              |
+| BraTS training samples       | 500                              |
+| BraTS validation samples     | 200                              |
+| Classification epochs        | 50                               |
+| Segmentation epochs          | 20                               |
+| Batch size                   | 16                               |
+| Classification learning rate | 1e-4                             |
+| Segmentation learning rate   | 1e-4                             |
+| Optimizer                    | AdamW                            |
+| Weight decay                 | 1e-4                             |
+| LR scheduler                 | CosineAnnealingLR                |
+| Classification loss          | CrossEntropyLoss                 |
+| Segmentation loss            | BCE + Dice                       |
+| Default device               | CUDA if available, otherwise CPU |
+
+These values correspond to the current implementation rather than theoretical/projected settings.
+The training pipeline is configured for 20 U-Net segmentation epochs and 50 SegUX-SSPANet classification epochs. During development, earlier training runs were stopped after fewer epochs, including a 3-epoch run. Therefore, the configured epoch counts should not be interpreted as the number of epochs completed in every experiment.
+
+---
+
+# 9. Dataset Preparation
+
+## Figshare Brain Tumor Dataset
+
+The Figshare dataset is used for **classification**.
+
+The dataset loader searches class directories for:
+
+```text
+.jpg
+.jpeg
+.png
+```
+
+Expected structure:
+
+```text
+ml/data/figshare/
+├── glioma/
+├── meningioma/
+├── pituitary/
+└── no_tumor/
+```
+
+The loader deterministically shuffles the available samples and limits the training/validation subsets to the configured sample counts for laptop-friendly execution.
+
+---
+
+## BraTS Dataset
+
+BraTS is used for **segmentation**.
+
+The project processes MRI volumes into 2D image-mask pairs.
+
+Expected processed structure:
+
+```text
+ml/data/brats_2d/
+├── images/
+└── masks/
+```
+
+The current development dataset contains:
+
+```text
+Images: 4,798
+Masks:  4,798
+```
+
+Only a subset of these processed samples is loaded for training by default.
+
+---
+
+# 10. Evaluation
+
+The project provides a dedicated evaluation script:
 
 ```bash
 python -m scripts.evaluate \
@@ -190,167 +467,666 @@ python -m scripts.evaluate \
     --output ml/eval_results.json
 ```
 
-Evaluation computes:
-- **Classification**: Accuracy, Precision, Recall, F1, AUC-ROC, Confusion Matrix
-- **Segmentation**: Dice Score, IoU, Sensitivity, Specificity
-- **Uncertainty**: Brier Score, Expected Calibration Error (ECE)
-- **MC Dropout**: Average confidence, predictive entropy, uncertain case ratio
+The evaluation script uses a smaller test subset to make CPU/laptop evaluation practical.
+
+Default configuration:
+
+```text
+Maximum test samples per dataset: 300
+Batch size:                       2
+MC Dropout samples:               30
+```
+
+The test pool is formed from samples remaining after the training and validation subsets.
 
 ---
 
-## API Reference
+# 11. Evaluation Metrics
 
-### Authentication
+## Classification
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/auth/register` | Register a new user |
-| POST | `/api/v1/auth/login` | Login and get JWT token |
-| GET | `/api/v1/auth/me` | Get current user info |
+The evaluation pipeline calculates:
 
-### Patients
+* Accuracy
+* Precision
+* Recall
+* Macro F1-score
+* AUC-ROC
+* Confusion matrix
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/patients` | Create a patient |
-| GET | `/api/v1/patients` | List all patients |
-| GET | `/api/v1/patients/{id}` | Get a specific patient |
+## Segmentation
 
-### Predictions
+The evaluation pipeline calculates:
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/predict` | Run AI inference on an MRI |
-| GET | `/api/v1/predictions` | List all predictions |
-| GET | `/api/v1/predictions/{id}` | Get a specific prediction |
+* Dice score
+* IoU
+* Sensitivity
+* Specificity
 
-### Reports
+## Uncertainty
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/reports/{prediction_id}` | Generate a PDF report |
-| GET | `/api/v1/reports` | List all reports |
+The system evaluates:
 
-### Health
+* Brier score
+* Expected Calibration Error (ECE)
+* MC-Dropout confidence
+* Predictive entropy
+* Mutual information
+* Uncertain-case ratio
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/health` | Health check + model status |
+These metrics are calculated by the actual evaluation code and saved to the generated evaluation JSON.
 
 ---
 
-## AI Model Components
+# 12. Uncertainty Estimation
 
-### SSPANet (Strip-Style Pooling Attention Network)
+SegUX-SSPANet uses **Monte Carlo Dropout** to estimate predictive uncertainty.
 
-The core attention module from the research paper, combining three pooling streams:
+The default configuration performs:
 
-1. **Channel Attention** (Squeeze-Excitation): Captures inter-channel dependencies
-2. **Strip Pooling**: Horizontal and vertical 1D pooling for long-range spatial dependencies
-3. **Style Pooling**: Mean + variance pooling for texture and style features
+```text
+30 stochastic forward passes
+```
 
-The three streams are fused via a 1x1 convolution and added as a residual connection.
+For each prediction, the system calculates:
 
-**File**: `backend/ml/models/sspanet.py` — **Adapted from the paper's architecture.**
+* Mean predicted probabilities
+* Maximum predicted-class probability
+* Predictive entropy
+* Expected entropy
+* Mutual information
 
-### SegUX-SSPANet (Full Model)
+A case can be considered uncertain when:
 
-Multi-task architecture:
-- **Backbone**: ResNet50 (ImageNet-pretrained)
-- **Attention**: SSPANet modules at each residual stage (256, 512, 1024, 2048 channels)
-- **Classification head**: Global avg pool → FC → Dropout → FC(num_classes)
-- **MC Dropout**: Dropout enabled at inference for uncertainty estimation
+```text
+confidence < 0.75
+```
 
-**File**: `backend/ml/models/segux_sspanet.py` — **Newly written.**
+or when:
 
-### U-Net (Segmentation)
+```text
+mutual information > 0.30
+```
 
-Standard U-Net encoder-decoder for binary tumor segmentation:
-- Encoder: 4 down-sampling blocks (64 → 128 → 256 → 512 → 1024 channels)
-- Decoder: 4 up-sampling blocks with skip connections
-- Output: 1-channel sigmoid probability map
-
-**File**: `backend/ml/models/unet.py` — **Adapted from the standard U-Net architecture (Ronneberger et al., 2015).**
-
-### GradCAM Variants
-
-Three explainability methods:
-- **GradCAM**: Gradient-weighted Class Activation Mapping
-- **GradCAM++**: Weighted gradients for better localization
-- **EigenGradCAM**: PCA-based gradients for stability
-
-**File**: `backend/ml/utils/gradcam_utils.py` — **Uses the `pytorch-grad-cam` library.**
-
-### Monte Carlo Dropout Uncertainty
-
-- Runs N stochastic forward passes (default: 30) with dropout enabled
-- **Predictive entropy**: Total uncertainty (H[p(y|x)])
-- **Mutual information**: Epistemic uncertainty (model uncertainty)
-- **Confidence**: 1 - normalized entropy
-- Cases with confidence < 0.75 or high mutual information are flagged for expert review
-
-### Loss Functions
-
-- **CrossEntropy**: Classification loss
-- **Dice Loss**: Soft Dice for segmentation
-- **BCE + Dice**: Combined segmentation loss for stable training
-- **Multi-task loss**: Weighted sum of classification + segmentation losses
-
-**File**: `backend/ml/utils/losses.py` — **Newly written.**
+This information is intended to support expert review rather than replace clinical judgment.
 
 ---
 
-## Database Schema
+# 13. Explainable AI
 
-The system uses Supabase (PostgreSQL) with the following tables:
+The system provides three Grad-CAM-based visualization methods:
 
-| Table | Description |
-|-------|-------------|
-| `patients` | Patient demographics (name, age, gender, MRN) |
-| `predictions` | AI inference results (class, probabilities, uncertainty, segmentation, GradCAM) |
-| `reports` | PDF report generation metadata |
+### Grad-CAM
 
-All tables have **Row Level Security (RLS)** enabled — users can only access their own data.
+Highlights image regions that contribute to the selected prediction.
 
----
+### Grad-CAM++
 
-## Frontend Pages
+Provides improved localization using weighted gradients.
 
-| Page | Route | Description |
-|------|-------|-------------|
-| Login | `/login` | Email/password authentication |
-| Register | `/register` | New account creation |
-| Dashboard | `/dashboard` | Overview stats, recent analyses, tumor distribution chart |
-| Upload MRI | `/upload` | Drag-and-drop MRI upload with patient info form |
-| Prediction | `/prediction/:id` | Full results: classification, segmentation, GradCAM, uncertainty |
-| History | `/history` | Searchable, filterable list of all analyses |
-| Reports | `/reports` | Generate and download PDF diagnostic reports |
-| Settings | `/settings` | Profile management and model configuration |
+### EigenGradCAM
+
+Uses principal-component-based gradient information to produce activation maps.
+
+Implementation:
+
+```text
+backend/ml/utils/gradcam_utils.py
+```
+
+The project uses the `pytorch-grad-cam` library for these explainability methods.
 
 ---
 
-## Component Attribution
+# 14. Web Application
 
-| Component | Source | Notes |
-|-----------|--------|-------|
-| ResNet50 | torchvision (pretrained) | ImageNet weights |
-| U-Net | Standard architecture | Adapted from Ronneberger et al. 2015 |
-| GradCAM/++/EigenGradCAM | pytorch-grad-cam library | pip install grad-cam |
-| SSPANet | Research paper | Custom implementation of the paper's architecture |
-| SegUX-SSPANet | Newly written | Multi-task extension combining all components |
-| MC Dropout | Standard technique | Adapted for medical uncertainty estimation |
-| Dice Loss | Standard | Soft Dice for differentiable segmentation metrics |
-| FastAPI backend | Newly written | Full REST API with JWT auth |
-| React frontend | Newly written | Complete medical UI with Tailwind CSS |
+The frontend is implemented using:
+
+* React
+* TypeScript
+* Vite
+* Tailwind CSS
+
+The application includes the following pages:
+
+| Page       | Purpose                            |
+| ---------- | ---------------------------------- |
+| Login      | User authentication                |
+| Register   | Account creation                   |
+| Dashboard  | Overview and recent analyses       |
+| Upload MRI | MRI upload and patient information |
+| Prediction | AI analysis results                |
+| History    | Previous predictions               |
+| Reports    | PDF report generation/download     |
+| Settings   | Profile/application settings       |
+
+The current repository contains these frontend routes and components.
 
 ---
 
-## Disclaimer
+# 15. Backend
 
-This system is intended for **research and educational purposes only**. It is NOT a substitute for professional medical diagnosis. All AI-generated findings must be validated by a qualified radiologist or neurologist before any clinical decision is made.
+The backend uses:
+
+* Python
+* FastAPI
+* PyTorch
+* Pydantic
+* SQLAlchemy
+* PostgreSQL/Supabase
+* JWT-based authentication
+
+The primary inference endpoint is:
+
+```text
+POST /api/v1/predict
+```
+
+The backend performs model loading, preprocessing, segmentation guidance generation, classification, uncertainty estimation, explainability processing, and prediction persistence.
 
 ---
 
-## License
+# 16. API Endpoints
 
-This project is provided for research and educational use.
+## Authentication
+
+```text
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+GET  /api/v1/auth/me
+```
+
+## Patients
+
+```text
+POST /api/v1/patients
+GET  /api/v1/patients
+GET  /api/v1/patients/{id}
+```
+
+## Predictions
+
+```text
+POST /api/v1/predict
+GET  /api/v1/predictions
+GET  /api/v1/predictions/{id}
+```
+
+## Reports
+
+```text
+POST /api/v1/reports/{prediction_id}
+GET  /api/v1/reports
+```
+
+## Health
+
+```text
+GET /api/v1/health
+```
+
+The API structure is defined in the current backend implementation.
+
+---
+
+# 17. Database
+
+The application uses PostgreSQL through Supabase.
+
+Main application entities include:
+
+```text
+patients
+predictions
+reports
+```
+
+Patient records contain information such as patient name and demographic information.
+
+Prediction records store AI-generated analysis information, while reports store PDF report metadata.
+
+---
+
+# 18. Local Setup
+
+## Prerequisites
+
+Recommended environment:
+
+```text
+Python 3.11
+Node.js 18+
+npm
+PostgreSQL / Supabase
+Git
+```
+
+Python 3.11 is recommended for compatibility with the project's machine-learning dependencies.
+
+---
+
+## Frontend
+
+From the project root:
+
+```powershell
+npm install
+npm run dev
+```
+
+The Vite development server normally runs at:
+
+```text
+http://localhost:5173
+```
+
+---
+
+## Backend
+
+```powershell
+cd backend
+python -m venv venv
+```
+
+Activate the environment on Windows:
+
+```powershell
+venv\Scripts\activate
+```
+
+Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Start FastAPI:
+
+```powershell
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+API:
+
+```text
+http://localhost:8000
+```
+
+Swagger documentation:
+
+```text
+http://localhost:8000/api/v1/docs
+```
+
+---
+
+# 19. Environment Variables
+
+Create the required `.env` configuration in the backend.
+
+Typical configuration includes:
+
+```env
+DATABASE_URL=your_postgresql_connection_string
+
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+
+SECRET_KEY=your_secure_secret_key
+```
+
+Do not commit real Supabase keys, service-role keys, passwords, or secret keys to GitHub.
+
+---
+
+# 20. Training
+
+After preparing the datasets:
+
+```powershell
+cd backend
+venv\Scripts\activate
+```
+
+Run the training pipeline:
+
+```powershell
+python -m scripts.train `
+    --epochs 50 `
+    --seg_epochs 20 `
+    --batch_size 16 `
+    --lr 1e-4 `
+    --seg_lr 1e-4 `
+    --figshare_dir ml/data/figshare `
+    --brats_dir ml/data/brats_2d `
+    --checkpoint_dir ml/checkpoints
+```
+
+The training pipeline performs:
+
+```text
+Stage 1
+BraTS
+  ↓
+U-Net training
+  ↓
+Best U-Net checkpoint
+  ↓
+Freeze U-Net
+
+Stage 2
+Figshare
+  ↓
+Generate U-Net guidance
+  ↓
+SegUX-SSPANet classification
+  ↓
+Best complete checkpoint
+```
+
+The final checkpoint is:
+
+```text
+backend/ml/checkpoints/segux_sspanet_best.pth
+```
+
+The checkpoint stores the classifier, segmentor, validation metrics, epoch, and model version.
+
+---
+
+# 21. Evaluation
+
+Run:
+
+```powershell
+python -m scripts.evaluate `
+    --checkpoint ml/checkpoints/segux_sspanet_best.pth `
+    --figshare_dir ml/data/figshare `
+    --brats_dir ml/data/brats_2d `
+    --output ml/eval_results.json
+```
+
+For CPU-based evaluation:
+
+```powershell
+python -m scripts.evaluate `
+    --checkpoint ml/checkpoints/segux_sspanet_best.pth `
+    --figshare_dir ml/data/figshare `
+    --brats_dir ml/data/brats_2d `
+    --output ml/eval_results.json `
+    --device cpu
+```
+
+The resulting file contains the measured evaluation metrics.
+
+---
+
+# 22. Model Checkpoints
+
+Important generated files include:
+
+```text
+ml/checkpoints/
+├── segux_unet_best.pth
+├── segmentation_recovery.pth
+└── segux_sspanet_best.pth
+```
+
+`segux_sspanet_best.pth` is the primary complete model checkpoint containing both classifier and U-Net weights.
+
+---
+
+# 23. Docker
+
+The repository contains Docker configuration for deployment:
+
+```text
+Dockerfile
+docker-compose.yml
+docker/
+```
+
+The intended full-stack architecture is:
+
+```text
+Browser
+   │
+   ▼
+Frontend container
+   │
+   ▼
+FastAPI backend
+   │
+   ├── PyTorch models
+   └── Database
+```
+
+Docker support is included in the repository, although local Python/Node execution is useful for development and debugging.
+
+---
+
+# 24. Current Project Limitations
+
+The current implementation has several important research limitations.
+
+### Limited Training Subsets
+
+The code deliberately restricts training to:
+
+```text
+Figshare: 1,000 training + 200 validation
+BraTS:    500 training + 200 validation
+```
+
+This was chosen to make training feasible on a laptop.
+
+### Segmentation Training Size
+
+Only 500 BraTS samples are currently used by the training script, even though the processed dataset contains substantially more image-mask pairs.
+
+Increasing the number of training samples may improve segmentation generalization, provided the additional samples are representative and properly processed.
+
+### Class Imbalance / Missing No-Tumor Samples
+
+The model defines four classes, but the current local Figshare dataset contained no `no_tumor` images.
+
+Consequently, four-class support exists in the model architecture, but the current trained dataset does not provide representative training examples for that class.
+
+### Staged Rather Than End-to-End Training
+
+The current implementation does not jointly optimize the U-Net and classification network in a single end-to-end multitask optimization loop.
+
+The U-Net is trained first and subsequently frozen while generating segmentation guidance for classifier training.
+
+### Evaluation Subset
+
+The default evaluation uses a maximum of 300 test samples from each dataset to reduce CPU execution time.
+
+Therefore, evaluation results should be interpreted as results on the configured test subset, not as a full-dataset clinical benchmark.
+
+---
+
+# 25. Reproducibility
+
+The project records the main model configuration in the application settings:
+
+```text
+Model version: SegUX-SSPANet-v1.0.0
+Image size: 224
+Segmentation size: 256
+Number of classes: 4
+MC Dropout samples: 30
+Uncertainty threshold: 0.75
+Classification epochs: 50
+Learning rate: 1e-4
+Batch size: 16
+```
+
+The current configuration is defined in:
+
+```text
+backend/app/core/config.py
+```
+
+and the staged training behavior is implemented in:
+
+```text
+backend/scripts/train.py
+```
+
+---
+
+# 26. Research Results
+
+Model performance should be reported using the metrics generated by the evaluation pipeline rather than manually entered or estimated values.
+
+Run:
+
+```powershell
+python -m scripts.evaluate `
+    --checkpoint ml/checkpoints/segux_sspanet_best.pth `
+    --figshare_dir ml/data/figshare `
+    --brats_dir ml/data/brats_2d `
+    --output ml/eval_results.json
+```
+
+The generated results include:
+
+```text
+Classification
+├── Accuracy
+├── Precision
+├── Recall
+├── Macro F1
+├── AUC-ROC
+└── Confusion Matrix
+
+Segmentation
+├── Dice
+├── IoU
+├── Sensitivity
+└── Specificity
+
+Uncertainty
+├── Brier Score
+├── ECE
+├── MC Confidence
+├── Predictive Entropy
+├── Mutual Information
+└── Uncertain Case Ratio
+```
+
+No performance value is hard-coded in this README because the reported values should correspond to the actual checkpoint and evaluation run.
+
+---
+
+# 27. Technology Stack
+
+| Layer           | Technology                           |
+| --------------- | ------------------------------------ |
+| Frontend        | React + TypeScript                   |
+| Build Tool      | Vite                                 |
+| Styling         | Tailwind CSS                         |
+| Backend         | FastAPI                              |
+| Deep Learning   | PyTorch                              |
+| Classification  | ResNet-50 + SSPANet                  |
+| Segmentation    | U-Net                                |
+| Explainability  | Grad-CAM / Grad-CAM++ / EigenGradCAM |
+| Uncertainty     | Monte Carlo Dropout                  |
+| Database        | PostgreSQL / Supabase                |
+| Authentication  | JWT / Supabase                       |
+| PDF Reports     | Backend report generation            |
+| Deployment      | Docker / Docker Compose              |
+| Version Control | Git / GitHub                         |
+
+---
+
+# 28. Project Workflow
+
+```text
+User Login
+    │
+    ▼
+Patient Registration
+    │
+    ▼
+MRI Upload
+    │
+    ▼
+Preprocessing
+    │
+    ▼
+U-Net Segmentation
+    │
+    ├──────────────► Tumor Mask
+    │
+    ▼
+Segmentation Guidance
+    │
+    ▼
+SegUX-SSPANet
+    │
+    ├──────────────► Tumor Classification
+    │
+    ├──────────────► Classification Probabilities
+    │
+    ├──────────────► GradCAM Visualizations
+    │
+    └──────────────► MC-Dropout Uncertainty
+                            │
+                            ▼
+                    Clinical Review Flag
+                            │
+                            ▼
+                     Prediction Record
+                            │
+                            ▼
+                      PDF Report
+```
+
+---
+
+# 29. Future Improvements
+
+Potential future improvements include:
+
+* Training U-Net on a larger BraTS subset or full processed dataset
+* Adding more balanced `no_tumor` samples
+* Performing end-to-end joint optimization
+* Increasing the classification training dataset
+* GPU-based training and evaluation
+* Patient-level rather than image-level dataset splitting
+* More rigorous external validation
+* Calibration improvement
+* Ablation studies for SSPANet and segmentation guidance
+* Comparison with baseline CNN architectures
+* Cross-dataset generalization experiments
+* Clinical expert validation
+
+---
+
+# 30. Important Scientific Note
+
+This project demonstrates an AI-assisted research workflow for brain MRI analysis.
+
+It should **not** be described as a clinically validated diagnostic system unless appropriate clinical validation, external testing, regulatory review, and expert assessment have been completed.
+
+The outputs are intended to assist research and development and should not be used as the sole basis for medical decisions.
+
+---
+
+# 31. License
+
+This project is provided for research and educational purposes.
+
+---
+
+## Author
+
+**Nuzhat Sultana**
+
+GitHub: [Nuzhat0307](https://github.com/Nuzhat0307)
+
+Project: **SegUX-SSPANet**
