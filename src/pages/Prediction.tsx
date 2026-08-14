@@ -13,6 +13,11 @@ import {
   CheckCircle,
   FileText,
   Loader2,
+  Eye,
+  TrendingUp,
+  TrendingDown,
+  Lightbulb,
+  Activity,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import {
@@ -23,6 +28,7 @@ import {
   TUMOR_CLASS_COLORS,
   TUMOR_CLASS_DESCRIPTIONS,
   GradCAMResult,
+  FeatureExplanation,
 } from '../lib/types'
 import { formatProbability, formatConfidence, formatDate, getUncertaintyLabel } from '../lib/utils'
 import { PredictionBadge, ConfidenceBadge } from '../components/PredictionBadge'
@@ -214,16 +220,10 @@ export default function Prediction() {
               Uncertainty Detected — Expert Review Recommended
             </p>
             <p className="mt-0.5 text-sm text-warning-700">
-  {prediction.uncertainty.uncertainty_reason === 'high_epistemic_uncertainty'
-    ? `The model's confidence is ${formatConfidence(
-        prediction.uncertainty.confidence
-      )}, with elevated epistemic uncertainty (mutual information ${
-        prediction.uncertainty.mutual_information
-      .toFixed(4)}). This case may benefit from review by a specialist.`
-    : `The model's confidence is ${formatConfidence(
-        prediction.uncertainty.confidence
-      )}, which is below the confidence threshold. This case may benefit from review by a specialist.`}
-</p>
+              The model's confidence is {formatConfidence(prediction.uncertainty.confidence)} with
+              high mutual information ({prediction.uncertainty.mutual_information.toFixed(4)}),
+              indicating epistemic uncertainty. This case may benefit from review by a specialist.
+            </p>
           </div>
         </div>
       )}
@@ -259,10 +259,8 @@ export default function Prediction() {
             <div className="bg-white px-4 py-3 text-center">
               <p className="text-xs text-neutral-500">Dice Score</p>
               <p className="text-lg font-bold text-primary-600">
-  {prediction.segmentation.dice_score != null
-    ? prediction.segmentation.dice_score.toFixed(3)
-    : 'N/A'}
-</p>
+                {prediction.segmentation.dice_score.toFixed(3)}
+              </p>
             </div>
             <div className="bg-white px-4 py-3 text-center">
               <p className="text-xs text-neutral-500">Tumor Area</p>
@@ -381,6 +379,14 @@ export default function Prediction() {
           </div>
         </div>
 
+        {/* Feature-based Explainability */}
+        {prediction.feature_explanation && (
+          <FeatureExplainabilitySection
+            explanation={prediction.feature_explanation}
+            tumorColor={tumorColor}
+          />
+        )}
+
         {/* Uncertainty Estimation */}
         <div className="card p-5 lg:col-span-2">
           <div className="mb-4 flex items-center gap-2">
@@ -450,6 +456,141 @@ export default function Prediction() {
             <Download className="h-4 w-4" />
             Download PDF Report
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FeatureExplainabilitySection({
+  explanation,
+  tumorColor,
+}: {
+  explanation: FeatureExplanation
+  tumorColor: string
+}) {
+  return (
+    <div className="card overflow-hidden lg:col-span-2">
+      <div className="flex items-center gap-2 border-b border-neutral-200 px-5 py-3">
+        <Eye className="h-4 w-4 text-primary-600" />
+        <h3 className="text-sm font-semibold text-neutral-900">
+          Feature-Based Explainability — What the Model Sees
+        </h3>
+      </div>
+
+      <div className="space-y-5 p-5">
+        {/* Summary */}
+        <div className="rounded-lg border-l-4 bg-neutral-50 p-4" style={{ borderLeftColor: tumorColor }}>
+          <div className="mb-2 flex items-center gap-1.5">
+            <Lightbulb className="h-4 w-4 text-primary-600" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Decision Summary
+            </p>
+          </div>
+          <p className="text-sm leading-relaxed text-neutral-800">{explanation.summary}</p>
+        </div>
+
+        {/* Detected features grid */}
+        <div>
+          <div className="mb-3 flex items-center gap-1.5">
+            <Activity className="h-4 w-4 text-secondary-600" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Detected Image Features
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {explanation.detected_features.map((feat) => (
+              <div key={feat.name} className="rounded-lg border border-neutral-200 bg-white p-3">
+                <p className="text-xs font-medium text-neutral-500">{feat.display_name}</p>
+                <p className="mt-1 text-lg font-bold text-neutral-900">
+                  {feat.value}
+                  <span className="ml-0.5 text-xs font-normal text-neutral-400">{feat.unit}</span>
+                </p>
+                <p className="mt-1 text-[10px] leading-snug text-neutral-400">{feat.description}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Key feature contributions */}
+        <div>
+          <div className="mb-3 flex items-center gap-1.5">
+            <Gauge className="h-4 w-4 text-accent-600" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Key Features Driving the Prediction
+            </p>
+          </div>
+          <div className="space-y-3">
+            {explanation.key_contributions.map((contrib, idx) => (
+              <div
+                key={idx}
+                className={`rounded-lg border p-4 ${
+                  contrib.direction === 'supports'
+                    ? 'border-success-200 bg-success-50'
+                    : 'border-warning-200 bg-warning-50'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    {contrib.direction === 'supports' ? (
+                      <TrendingUp className="h-4 w-4 flex-shrink-0 text-success-600" />
+                    ) : (
+                      <TrendingDown className="h-4 w-4 flex-shrink-0 text-warning-600" />
+                    )}
+                    <div>
+                      <p className="text-sm font-semibold text-neutral-900">
+                        {contrib.display_name}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-neutral-600">
+                        {contrib.explanation}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0 text-right">
+                    <span
+                      className={`text-xs font-bold ${
+                        contrib.direction === 'supports'
+                          ? 'text-success-700'
+                          : 'text-warning-700'
+                      }`}
+                    >
+                      {contrib.direction === 'supports' ? '+' : '-'}
+                      {(contrib.contribution * 100).toFixed(1)}%
+                    </span>
+                    <p className="text-[10px] text-neutral-400">
+                      {contrib.direction === 'supports' ? 'evidence for' : 'counter-evidence'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Region description */}
+        <div className="rounded-lg bg-primary-50 p-4">
+          <div className="mb-2 flex items-center gap-1.5">
+            <Scan className="h-4 w-4 text-primary-600" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary-700">
+              Region of Interest Analysis
+            </p>
+          </div>
+          <p className="text-sm leading-relaxed text-neutral-700">
+            {explanation.region_description}
+          </p>
+        </div>
+
+        {/* Clinical correlation */}
+        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+          <div className="mb-2 flex items-center gap-1.5">
+            <Brain className="h-4 w-4 text-secondary-600" />
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Clinical Correlation
+            </p>
+          </div>
+          <p className="text-sm leading-relaxed text-neutral-700">
+            {explanation.clinical_correlation}
+          </p>
         </div>
       </div>
     </div>

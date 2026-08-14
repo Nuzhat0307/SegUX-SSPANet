@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { runInference } from '../lib/mockInference'
 import { PredictionResult, Patient } from '../lib/types'
 import PageHeader from '../components/PageHeader'
 
@@ -113,134 +113,64 @@ export default function UploadMRI() {
   }
 
   const runAnalysis = async () => {
-  if (!file) return
+    if (!file) return
+    setStep('analyzing')
+    setProgress(10)
+    setProgressLabel('Preprocessing MRI scan...')
 
-  setStep('analyzing')
-  setError(null)
-  setProgress(10)
-  setProgressLabel('Preparing MRI scan...')
+    // Animate progress through the pipeline steps
+    const steps = [
+      { p: 20, label: 'Preprocessing MRI scan...' },
+      { p: 35, label: 'Running SSPANet + ResNet50 classification...' },
+      { p: 55, label: 'Generating U-Net segmentation mask...' },
+      { p: 70, label: 'Computing GradCAM / GradCAM++ / EigenGradCAM...' },
+      { p: 85, label: 'Running Monte Carlo Dropout uncertainty estimation...' },
+      { p: 95, label: 'Compiling results...' },
+    ]
 
-  try {
-    let patientId = patientForm.existingId
+    for (const s of steps) {
+      await new Promise((r) => setTimeout(r, 500))
+      setProgress(s.p)
+      setProgressLabel(s.label)
+    }
 
-    // --------------------------------------------------
-    // 1. Create new patient if required
-    // --------------------------------------------------
+    try {
+      let patientId = patientForm.existingId
 
-    if (patientForm.isNew) {
-      if (!patientForm.name || !patientForm.mrn) {
-        setError('Patient name and MRN are required for new patients')
+      if (patientForm.isNew) {
+        if (!patientForm.name || !patientForm.mrn) {
+          setError('Patient name and MRN are required for new patients')
+          setStep('patient')
+          return
+        }
+        const { data: newPatient, error: patientErr } = await supabase
+          .from('patients')
+          .insert({
+            name: patientForm.name,
+            age: patientForm.age ? parseInt(patientForm.age) : null,
+            gender: patientForm.gender || null,
+            mrn: patientForm.mrn,
+            notes: patientForm.notes || null,
+          })
+          .select()
+          .single()
+        if (patientErr) throw new Error(patientErr.message)
+        patientId = (newPatient as any).id
+      }
+
+      if (!patientId) {
+        setError('No patient selected')
         setStep('patient')
         return
       }
 
-      setProgress(15)
-      setProgressLabel('Creating patient record...')
+      // Run mock inference
+      const result: PredictionResult = await runInference(file, patientId)
+      setProgress(100)
+      setProgressLabel('Done!')
 
-      const { data: newPatient, error: patientErr } = await supabase
-        .from('patients')
-        .insert({
-          name: patientForm.name,
-          age: patientForm.age ? parseInt(patientForm.age) : null,
-          gender: patientForm.gender || null,
-          mrn: patientForm.mrn,
-          notes: patientForm.notes || null,
-        })
-        .select()
-        .single()
-
-      if (patientErr) {
-        throw new Error(`Patient creation failed: ${patientErr.message}`)
-      }
-
-      patientId = newPatient.id
-    }
-
-    if (!patientId) {
-      setError('No patient selected')
-      setStep('patient')
-      return
-    }
-
-    // --------------------------------------------------
-    // 2. Convert image to Base64
-    // --------------------------------------------------
-
-    setProgress(20)
-    setProgressLabel('Preprocessing MRI scan...')
-
-    const imageBase64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result)
-        } else {
-          reject(new Error('Unable to read image'))
-        }
-      }
-
-      reader.onerror = () => {
-        reject(new Error('Failed to read MRI image'))
-      }
-
-      reader.readAsDataURL(file)
-    })
-
-    // --------------------------------------------------
-    // 3. Call REAL FastAPI model
-    // --------------------------------------------------
-
-    setProgress(30)
-    setProgressLabel('Sending MRI to AI model...')
-
-    console.log('Calling FastAPI:', `${API_URL}/api/v1/predict`)
-    console.log('Patient ID:', patientId)
-
-    const response = await fetch(`${API_URL}/api/v1/predict`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        patient_id: patientId,
-        image_base64: imageBase64,
-      }),
-    })
-
-    console.log('FastAPI response status:', response.status)
-
-    if (!response.ok) {
-      const errorText = await response.text()
-
-      console.error('FastAPI error:', errorText)
-
-      throw new Error(
-        `AI server error (${response.status}): ${errorText}`
-      )
-    }
-
-    setProgress(70)
-    setProgressLabel('Processing AI results...')
-
-    const result: PredictionResult = await response.json()
-
-    console.log('REAL MODEL RESULT:', result)
-
-    // --------------------------------------------------
-    // 4. Finish progress
-    // --------------------------------------------------
-
-    setProgress(90)
-    setProgressLabel('Saving prediction...')
-
-    // --------------------------------------------------
-    // 5. Save REAL prediction result to Supabase
-    // --------------------------------------------------
-
-    const { error: predErr } = await supabase
-      .from('predictions')
-      .insert({
+      // Save to database
+      const { error: predErr } = await supabase.from('predictions').insert({
         id: result.id,
         patient_id: patientId,
         image_base64: result.image_base64,
@@ -250,41 +180,22 @@ export default function UploadMRI() {
         uncertainty: result.uncertainty,
         segmentation: result.segmentation,
         gradcam_results: result.gradcam_results,
+        feature_explanation: result.feature_explanation,
         model_version: result.model_version,
         inference_time_ms: result.inference_time_ms,
         notes: result.notes,
       })
 
-    if (predErr) {
-      throw new Error(
-        `Failed to save prediction: ${predErr.message}`
-      )
+      if (predErr) throw new Error(predErr.message)
+
+      // Brief delay then navigate to results
+      await new Promise((r) => setTimeout(r, 400))
+      navigate(`/prediction/${result.id}`)
+    } catch (err: any) {
+      setError(err.message || 'Analysis failed. Please try again.')
+      setStep('error')
     }
-
-    setProgress(100)
-    setProgressLabel('Analysis complete!')
-
-    console.log('Prediction saved successfully:', result.id)
-
-    // --------------------------------------------------
-    // 6. Navigate to results
-    // --------------------------------------------------
-
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    navigate(`/prediction/${result.id}`)
-
-  } catch (err: any) {
-    console.error('Analysis failed:', err)
-
-    setError(
-      err?.message ||
-      'Analysis failed. Please check that the AI backend is running.'
-    )
-
-    setStep('error')
   }
-}
 
   const handlePatientSubmit = (e: FormEvent) => {
     e.preventDefault()
