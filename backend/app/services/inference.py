@@ -118,12 +118,13 @@ class InferenceService:
         # Preprocess
         img_array = np.array(image.resize((settings.IMAGE_SIZE, settings.IMAGE_SIZE)))
         img_tensor = (
-            torch.from_numpy(img_array)
-            .float()
-            .unsqueeze(0)
-            .unsqueeze(0)
-            .to(self._device)
-            / 255.0
+                torch.from_numpy(img_array)
+                .float()
+                .unsqueeze(0)
+                .repeat(3, 1, 1)
+                .unsqueeze(0)
+                .to(self._device)
+                / 255.0
         )
 
         # Classification
@@ -180,25 +181,42 @@ class InferenceService:
         """Monte Carlo Dropout uncertainty estimation."""
         import torch
 
-        self._model.train()  # Enable dropout
+        # Keep BatchNorm layers in evaluation mode while enabling
+        # only Dropout layers for MC sampling.
+        self._model.eval()
+
+        for module in self._model.modules():
+            if isinstance(module, torch.nn.Dropout):
+                module.train()
+
         all_probs = []
+
         with torch.no_grad():
             for _ in range(settings.MC_DROPOUT_SAMPLES):
                 logits = self._model(img_tensor)
                 probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
                 all_probs.append(probs)
-        self._model.eval()  # Disable dropout
+
+        # Restore complete evaluation mode after MC sampling
+        self._model.eval()
 
         all_probs = np.array(all_probs)
         mean_probs = all_probs.mean(axis=0)
 
         # Predictive entropy
-        pred_entropy = -np.sum(mean_probs * np.log2(mean_probs + 1e-10))
-        # Expected entropy (aleatoric)
-        expected_entropy = np.mean(
-            [-np.sum(p * np.log2(p + 1e-10)) for p in all_probs]
+        pred_entropy = -np.sum(
+            mean_probs * np.log2(mean_probs + 1e-10)
         )
-        # Mutual information (epistemic)
+
+        # Expected entropy
+        expected_entropy = np.mean(
+            [
+                -np.sum(p * np.log2(p + 1e-10))
+                for p in all_probs
+            ]
+        )
+
+        # Mutual information
         mutual_info = pred_entropy - expected_entropy
 
         max_entropy = np.log2(settings.NUM_CLASSES)
@@ -211,7 +229,8 @@ class InferenceService:
             "mutual_information": float(max(0, mutual_info)),
             "confidence": float(confidence),
             "is_uncertain": bool(
-                confidence < settings.UNCERTAINTY_THRESHOLD or mutual_info > 0.3
+                confidence < settings.UNCERTAINTY_THRESHOLD
+                or mutual_info > 0.3
             ),
         }
 
