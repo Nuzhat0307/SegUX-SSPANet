@@ -33,15 +33,14 @@ export default function Dashboard() {
           supabase.from('predictions').select('id', { count: 'exact', head: true }).eq('predicted_class', 'no_tumor'),
           supabase.from('predictions').select('uncertainty').order('created_at', { ascending: false }).limit(1000),
         ])
-
         const firstError = [recentResult.error, patientResult.error, patientCountResult.error, totalResult.error, gliomaResult.error, meningiomaResult.error, pituitaryResult.error, noTumorResult.error, uncertaintyResult.error].find(Boolean)
         if (firstError) throw firstError
         if (!active) return
 
-        const uncertaintyRows = (uncertaintyResult.data || []) as any[]
-        const uncertain = uncertaintyRows.filter(row => row.uncertainty?.is_uncertain).length
-        const confidence = uncertaintyRows.length ? uncertaintyRows.reduce((sum, row) => sum + Number(row.uncertainty?.confidence || 0), 0) / uncertaintyRows.length : 0
-        const distribution = {
+        const rows = (uncertaintyResult.data || []) as any[]
+        const uncertain = rows.filter(row => row.uncertainty?.is_uncertain).length
+        const confidence = rows.length ? rows.reduce((sum, row) => sum + Number(row.uncertainty?.confidence || 0), 0) / rows.length : 0
+        const dist = {
           glioma: gliomaResult.count || 0,
           meningioma: meningiomaResult.count || 0,
           pituitary: pituitaryResult.count || 0,
@@ -51,7 +50,7 @@ export default function Dashboard() {
 
         setRecent((recentResult.data || []) as Recent[])
         setPatients(mappedPatients)
-        setDistribution(distribution)
+        setDistribution(dist)
         setStats({ total: totalResult.count || 0, patients: patientCountResult.count || 0, uncertain, confidence })
       } catch (error) {
         console.error('Dashboard load error', error)

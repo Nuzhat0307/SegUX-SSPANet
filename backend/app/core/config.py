@@ -6,13 +6,10 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
-# backend/ is the runtime root for both local uvicorn and the backend Docker image.
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-
     APP_NAME: str = "SegUX-SSPANet Brain Tumor Diagnosis System"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
@@ -30,9 +27,7 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     MODEL_VERSION: str = "SegUX-SSPANet-v1.0.0"
-    MODEL_CHECKPOINT_PATH: str = str(
-        BACKEND_ROOT / "ml" / "checkpoints" / "segux_sspanet_best.pth"
-    )
+    MODEL_CHECKPOINT_PATH: str = str(BACKEND_ROOT / "ml" / "checkpoints" / "segux_sspanet_best.pth")
     NUM_CLASSES: int = 4
     IMAGE_SIZE: int = 224
     SEGMENTATION_SIZE: int = 256
