@@ -10,41 +10,25 @@ from loguru import logger
 
 from app.core.config import settings
 from app.api.routes import router
-from app.services.inference import inference_service
+from app.services.trained_inference import inference_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: startup and shutdown events."""
+    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    logger.info(f"Model version: {settings.MODEL_VERSION}")
+    logger.info(f"Loading trained model from: {settings.MODEL_CHECKPOINT_PATH}")
 
-    logger.info(
-        f"Starting {settings.APP_NAME} v{settings.APP_VERSION}"
-    )
-    logger.info(
-        f"Model version: {settings.MODEL_VERSION}"
-    )
-
-    # Load the trained SegUX-SSPANet checkpoint
-    logger.info(
-        f"Loading trained model from: "
-        f"{settings.MODEL_CHECKPOINT_PATH}"
-    )
-
+    # Startup fails if the trained checkpoint cannot be loaded. The API never
+    # silently switches to synthetic/mock predictions.
     inference_service.load_models()
 
-    if inference_service.is_loaded():
-        logger.info(
-            "TRAINED MODEL LOADED SUCCESSFULLY"
-        )
-        logger.info(
-            f"Checkpoint: {settings.MODEL_CHECKPOINT_PATH}"
-        )
-    else:
-        logger.error(
-            "TRAINED MODEL WAS NOT LOADED. "
-            "Inference may fall back to mock inference."
-        )
+    if not inference_service.is_loaded():
+        raise RuntimeError("Trained SegUX-SSPANet model failed to load")
 
+    logger.info("TRAINED MODEL LOADED SUCCESSFULLY")
+    logger.info(f"Checkpoint: {settings.MODEL_CHECKPOINT_PATH}")
+    logger.info("Inference source: trained checkpoint only")
     logger.info("Application startup complete.")
 
     yield
@@ -54,14 +38,12 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
         description=(
-            "AI-powered brain tumor diagnosis system with "
-            "segmentation-guided attention learning, "
-            "uncertainty estimation, and explainable AI."
+            "AI-powered brain tumor diagnosis system with segmentation-guided "
+            "attention learning, uncertainty estimation, and explainable AI."
         ),
         openapi_url=f"{settings.API_V1_PREFIX}/openapi.json",
         docs_url=f"{settings.API_V1_PREFIX}/docs",
@@ -77,10 +59,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(
-        router,
-        prefix=settings.API_V1_PREFIX,
-    )
+    app.include_router(router, prefix=settings.API_V1_PREFIX)
 
     @app.get("/")
     async def root():
@@ -89,6 +68,7 @@ def create_app() -> FastAPI:
             "version": settings.APP_VERSION,
             "model_version": settings.MODEL_VERSION,
             "model_loaded": inference_service.is_loaded(),
+            "inference_source": "trained_checkpoint" if inference_service.is_loaded() else "unavailable",
             "checkpoint": settings.MODEL_CHECKPOINT_PATH,
             "docs": f"{settings.API_V1_PREFIX}/docs",
         }
