@@ -2,7 +2,7 @@ export type TumorClass = 'glioma' | 'meningioma' | 'pituitary' | 'no_tumor'
 export interface ClassPrediction { label: TumorClass; displayName: string; probability: number }
 export interface UncertaintyEstimate { method: 'monte_carlo_dropout'; num_samples: number; predictive_entropy: number; mutual_information: number; confidence: number; is_uncertain: boolean }
 export interface GradCAMResult { method: 'gradcam' | 'gradcam_plus_plus' | 'eigengradcam'; heatmap_base64: string; overlay_base64: string }
-export interface SegmentationResult { mask_base64: string; overlay_base64: string; dice_score: number; tumor_area_pixels: number; tumor_area_percentage: number; bounding_box: { x:number; y:number; width:number; height:number } | null }
+export interface SegmentationResult { mask_base64: string; overlay_base64: string; dice_score: number | null; tumor_area_pixels: number; tumor_area_percentage: number; bounding_box: { x:number; y:number; width:number; height:number } | null }
 export interface ImageFeature { name:string; display_name:string; value:number; unit:string; description:string }
 export interface FeatureContribution { feature_name:string; display_name:string; contribution:number; direction:'supports'|'against'; explanation:string }
 export interface FeatureExplanation { summary:string; detected_features:ImageFeature[]; key_contributions:FeatureContribution[]; region_description:string; clinical_correlation:string }
