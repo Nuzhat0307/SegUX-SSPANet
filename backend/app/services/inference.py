@@ -181,8 +181,8 @@ class InferenceService:
         """Monte Carlo Dropout uncertainty estimation."""
         import torch
 
-        # Keep BatchNorm layers in evaluation mode while enabling
-        # only Dropout layers for MC sampling.
+        # Keep BatchNorm layers in evaluation mode.
+        # Enable only Dropout layers for MC sampling.
         self._model.eval()
 
         for module in self._model.modules():
@@ -197,18 +197,16 @@ class InferenceService:
                 probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
                 all_probs.append(probs)
 
-        # Restore complete evaluation mode after MC sampling
+        # Restore complete evaluation mode
         self._model.eval()
 
         all_probs = np.array(all_probs)
         mean_probs = all_probs.mean(axis=0)
 
-        # Predictive entropy
         pred_entropy = -np.sum(
             mean_probs * np.log2(mean_probs + 1e-10)
         )
 
-        # Expected entropy
         expected_entropy = np.mean(
             [
                 -np.sum(p * np.log2(p + 1e-10))
@@ -216,7 +214,6 @@ class InferenceService:
             ]
         )
 
-        # Mutual information
         mutual_info = pred_entropy - expected_entropy
 
         max_entropy = np.log2(settings.NUM_CLASSES)
