@@ -6,8 +6,6 @@ from typing import Optional, List, Any
 from datetime import datetime
 from uuid import UUID
 
-
-# --- Auth ---
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -26,8 +24,6 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     created_at: datetime
-
-# --- Patient ---
 class PatientCreate(BaseModel):
     name: str
     age: Optional[int] = None
@@ -43,8 +39,6 @@ class PatientResponse(BaseModel):
     mrn: str
     notes: Optional[str] = None
     created_at: datetime
-
-# --- Prediction ---
 class ClassPredictionSchema(BaseModel):
     label: str
     display_name: str
@@ -83,15 +77,11 @@ class PredictionResponse(BaseModel):
     inference_time_ms: int
     created_at: datetime
     notes: Optional[str] = None
-
-# --- Report ---
 class ReportResponse(BaseModel):
     id: str
     prediction_id: str
     report_type: str
     created_at: datetime
-
-# --- Health ---
 class HealthResponse(BaseModel):
     status: str
     version: str
